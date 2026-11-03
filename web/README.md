@@ -21,7 +21,7 @@ tela ficam em `docs/screenshots/<tela>-<viewport>.png`.
 
 | Rota | Tela | Endpoints |
 |---|---|---|
-| `/` | Feed: cards com a nota em destaque, filtros de fonte, tag, período, nota mínima e ordem, busca, paginação (filtros na URL) e "Rodar pipeline" | `GET /api/feed`, `GET /api/sources`, `GET /api/settings`, `POST /api/pipeline/run` |
+| `/` | Feed: cards com a nota em destaque, scrubber de datas sobre o histograma diário, período e ordem em segmentados, "Mais filtros" (fonte, tag, nota mínima) em disclosure, busca, paginação (filtros na URL) e "Rodar pipeline" | `GET /api/feed`, `GET /api/feed/timeline`, `GET /api/sources`, `GET /api/settings`, `POST /api/pipeline/run` |
 | `/items/:id` | Detalhe/Cluster: resumo, motivo da nota, tags, conteúdo, metadados, cluster e duplicados com similaridade, link original | `GET /api/items/{id}` |
 | `/digests/:date?` | Digests: lista por data, leitura do HTML num iframe sandbox, download do Markdown e "Gerar agora" | `GET /api/digests`, `GET /api/digests/{date}?format=html\|md`, `POST /api/digests/generate` |
 | `/sources` | Fontes & Config: criar, editar, ativar/desativar, excluir (com confirmação) e "Coletar agora"; nota de corte, máximo de itens, cota por fonte, cron e fuso | `GET/POST /api/sources`, `PATCH/DELETE /api/sources/{id}`, `POST /api/sources/{id}/fetch`, `GET/PUT /api/settings` |

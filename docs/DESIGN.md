@@ -1,4 +1,4 @@
-# Design — Radar by JpDev (fase R1)
+# Design — Radar by JpDev (fases R1 e R2)
 
 Redesign editorial do front Vue 3 (`web/`). Referência estudada: Tubik, *The Alabama Solution* — páginas editoriais para a investigação da HBO (Webby 2026). As imagens do case foram baixadas para `.runs/ref/` (fora do git) só para estudo; nada da referência foi copiado: marca, cores, fontes e conteúdo são do Radar/JpDev.
 
@@ -107,3 +107,63 @@ Animação só em `transform`/`opacity` (nada de `width`/`height`), para não di
 ## 6. Acessibilidade
 
 Contraste ≥ 4,5:1 em texto (cinza `#A3A3A3` é o mínimo usado); foco visível amarelo em tudo; link "Pular para o conteúdo"; títulos com `aria-label` (as palavras animadas ficam `aria-hidden`); números animados com valor final em `sr-only`; gráficos com rótulo, alvos focáveis por dia e tabela equivalente; diálogos nativos (`<dialog>`) com Esc e foco preso; sem rolagem horizontal nos três viewports (verificado no e2e).
+
+---
+
+# Referência 2: MOXEN Encuentro (fase R2)
+
+Segunda referência, aplicada **por cima** do R1 sem trocar a linguagem editorial. Estudamos os padrões de widget do *Encuentro* (MOXEN): cartões flutuantes arredondados sobre fundo escuro, um scrubber arrastável com rótulo numérico vivo, painéis que se expandem com os filhos entrando em sequência e controles segmentados com pílula deslizante. Não copiamos marca, cor, fonte nem conteúdo da referência. A paleta continua JpDev (preto + amarelo, laranja só como apoio).
+
+## 1. Padrões e onde entraram
+
+| Padrão da referência | No Radar | Backend real |
+|---|---|---|
+| **Cartão flutuante** (raio ~16px, sombra difusa, fundo escuro) | `card-float`: scrubber, painel "Mais filtros", relatório da coleta, cada fonte, painel de configuração, cluster do item | — |
+| **Scrubber arrastável com rótulo `tabular-nums` ao vivo** | `TimelineScrubber.vue` no Feed: histograma de 30 dias com duas alças (início/fim) que escolhem uma faixa de datas. O rótulo `05 out → 03 nov` e a contagem "N itens nestes dias" mudam enquanto arrasta | **Novo** `GET /api/feed/timeline?days=30` (contagem por dia do `feed_view`, no fuso das settings, com os mesmos filtros não-temporais do feed). A faixa vira `from`/`to` (RFC 3339) em `/api/feed`; o teste de integração prova que o feed devolve exatamente o total que o histograma contou |
+| **Painel de disclosure** (altura 300–400ms ease-out, filhos com fade + `translateY(10px)→0` em sequência) | `DisclosurePanel.vue`: "Mais filtros" do feed (fonte, tag, nota mínima; abre sozinho quando um deles fica ativo) e "Detalhes da fonte" (cada campo de `config`, ID, criada/atualizada, última coleta com duração, run ID) | `/api/sources` (dados já existentes, antes ocultos) |
+| **Controle segmentado com pílula deslizante** (150–200ms ease-out) | `SegmentedControl.vue`: período e ordem do feed, período (7/14/30 dias) das métricas. Com faixa personalizada ativa, nenhuma opção de período fica marcada e a pílula some | `/api/feed?period=`, `/api/metrics?days=` |
+| **Gradientes suaves por categoria** | Cartão de fonte com `--grad-<kind>`: amarelo (Hacker News), laranja (Reddit), neutro (RSS), opacidade ≤ 11% | `kind` da fonte |
+| **Botão primário preto sobre superfície clara** | Faixa amarela "Faixa ativa · 28 out → 03 nov" com botão preto **Limpar faixa** (`surface-primary` + `btn-ink`). Sobre o escuro, o primário continua amarelo | — |
+
+## 2. Tokens novos (CSS variables em `web/src/style.css`, `:root`)
+
+| Token | Valor | Uso |
+|---|---|---|
+| `--radius-card` | `16px` | cartões flutuantes, superfície amarela |
+| `--radius-control` | `6px` | botões e campos |
+| `--shadow-float` | `inset 0 1px 0 #fff/4%, 0 18px 40px -18px #000/85%` | elevação dos cartões |
+| `--border-float` | `#fff` a 7% | borda dos cartões |
+| `--grad-hackernews` / `--grad-reddit` / `--grad-rss` | `linear-gradient(135deg, cor a 11% → 2% → transparente)` | blocos por tipo de fonte |
+| `--grad-scrub` | amarelo 95% → 55% | barras dentro da faixa |
+| `--ease-out` | `cubic-bezier(.22, 1, .36, 1)` | easing dos widgets |
+| `--dur-seg` | `180ms` | pílula do segmentado |
+| `--dur-disclose` | `340ms` | altura do disclosure (fechar: 220ms, sem stagger) |
+| `--dur-disclose-item` | `300ms` | fade + subida dos filhos |
+| `--stagger-disclose` | `45ms` | intervalo entre filhos (até 6 passos; atraso inicial de 80ms) |
+
+Utilitários: `card-float`, `surface-primary`, `btn-ink`, `.dz-group` (os filhos de uma grade entram um a um).
+
+## 3. Interação e acessibilidade
+
+- **Scrubber**: cada alça é `role="slider"` com `aria-valuemin/max/now`, `aria-label` ("Início/Fim da faixa de datas") e `aria-valuetext` ("Seg., 27 de out. de 2026, 5 itens"). Teclado: ←/↓ e →/↑ (±1 dia), PageDown/PageUp (±7), Home/End. A faixa é aplicada 400ms após a última tecla, ou ao soltar o ponteiro, e só se mudou desde o início do gesto. Arrastar uma alça move a sua borda pelo deslocamento do ponteiro, então um clique na alça sem arrastar não muda nada. **Alternativa ao arrasto (WCAG 2.5.7):** tocar no trilho leva a alça mais próxima ao dia tocado. A faixa sempre vai como `from` **e** `to` (no último dia, `to` é o fim do próprio histograma), para o feed devolver exatamente as linhas contadas. Se um link salvo começa antes da janela de 30 dias, o rótulo mostra a data real da URL e esconde a contagem, em vez de fingir que a faixa começa no 1º dia. Alças com 44px de área de toque; `touch-action: pan-y` deixa a rolagem vertical livre no celular.
+- **Disclosure**: padrão WAI-ARIA (botão com `aria-expanded` + `aria-controls`, região com `aria-labelledby`). Fechado, o conteúdo fica `visibility: hidden`: sai da ordem de tab e da árvore de acessibilidade, não só da vista.
+- **Segmentado**: grupo rotulado de botões `aria-pressed`; setas e Home/End movem foco e seleção.
+- **Rolagem**: troca de filtro (só a query muda) mantém a posição da página. Antes, cada filtro voltava ao topo e, no celular, tirava o scrubber da tela. Só os botões Anterior/Próxima rolam até o início da lista.
+- **Landmarks**: só o painel "Mais filtros" é `role=region`. Os detalhes de cada fonte não são, para não encher a lista de landmarks.
+- **Exceção registrada ao R1**: o R1 só anima `transform`/`opacity`. O disclosure anima `grid-template-rows` (altura) e a pílula anima `width`, porque são exatamente os padrões pedidos. O custo é pequeno: o layout é recalculado só no painel ou no grupo de botões.
+
+## 4. `prefers-reduced-motion`
+
+A regra global do R1 (durações a 0,01ms, sem delay) cobre os widgets: a pílula salta, o disclosure abre na altura final com os filhos já visíveis, as barras e alças do scrubber não deslizam. O teste e2e `reduced motion: widgets settle at once` cobre isso.
+
+## 5. Testes
+
+`web/e2e/widgets.spec.ts`, nos três viewports:
+- **pílula**: assentada sob a opção pressionada (x e largura com tolerância de 1px), seleção pelas setas, períodos das métricas;
+- **scrubber pelo teclado**: semântica de slider, rótulo ao vivo, `from` aplicado na URL e na API, total do feed igual à contagem do histograma (e à soma das barras), teclas que voltam ao início não aplicam nada, botão preto sobre o amarelo e "Limpar faixa";
+- **scrubber pelo ponteiro**: arrasto com rótulo mudando durante o gesto, clique simples na alça sem efeito, toque no trilho como alternativa, posição de rolagem preservada;
+- **scrubber em link salvo** com início fora da janela, e **filtro trocado na página 2** sem a tela pular;
+- **disclosure**: `aria-expanded`, `0fr → 1fr` com 340ms, atrasos crescentes entre os filhos, contador de filtros, detalhes da fonte com dados reais, gradiente e raio de 16px;
+- **reduced motion**.
+
+Go: `TestDayStarts` (limites de dia no fuso), `TestTimelineIgnoresTimeFilters` e casos de validação em `TestStatusMapping`, além do bloco de timeline em `TestAPIAgainstPostgresAndNATS`, que roda contra o Postgres real.

@@ -78,7 +78,8 @@ docker-compose.yml       Postgres pgvector pg16 + NATS JetStream
 | Método e rota | O que faz |
 |---|---|
 | `GET /healthz` | saúde (Postgres e NATS) |
-| `GET /api/feed` | feed paginado (`source_id`, `tag`, `q`, `period`, `min_score`, `sort`, `page`) |
+| `GET /api/feed` | feed paginado (`source_id`, `tag`, `q`, `period` ou `from`/`to`, `min_score`, `sort`, `page`) |
+| `GET /api/feed/timeline` | itens do feed por dia nos últimos `days` (1–90, padrão 30), mesmos filtros não-temporais; alimenta o scrubber de datas |
 | `GET /api/items/{id}` | item, cluster e duplicados com similaridade |
 | `GET /api/digests` · `GET /api/digests/{date}` · `POST /api/digests/generate` | digests (`format=html\|md`) |
 | `GET/POST /api/sources` · `PATCH/DELETE /api/sources/{id}` · `POST /api/sources/{id}/fetch` | CRUD de fontes e coleta manual |
@@ -144,6 +145,8 @@ cd backend; go test ./... -count=1 -cover
   `web/e2e/actions.spec.ts` cobre filtros, busca, tag, ordem, nota mínima, paginação, rodar pipeline,
   abrir detalhe e 404 de item, gerar e ler digest, CRUD de fonte com erro de validação, ativar/desativar,
   coletar agora, salvar settings com cron inválido, métricas (período, atualizar, tabela) e navegação.
+  `web/e2e/widgets.spec.ts` cobre o scrubber de datas (teclado, arrasto, toque, link salvo), as pílulas
+  dos segmentados, os painéis de disclosure e o reduced motion (detalhes em `docs/DESIGN.md` › Referência 2).
   Cada teste roda em 3 projects: **desktop 1440x900**, **tablet 834x1112** e **mobile 390x844**,
   falha em erro de console, exceção de página ou 5xx, e checa overflow horizontal.
   Os testes que alteram dados apagam a fonte criada e restauram as settings.
