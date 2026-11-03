@@ -8,3 +8,4 @@ bin/
 test-results/
 playwright-report/
 coverage.out
+.runs/

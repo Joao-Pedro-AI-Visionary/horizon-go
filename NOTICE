@@ -1,0 +1,10 @@
+Horizon-Go (Radar by JpDev)
+Copyright (c) 2026 JpDev
+
+This project is a Go + Vue 3 rewrite of Horizon:
+  https://github.com/Thysrael/Horizon
+  Copyright (c) 2026 Thysrael — licensed under the MIT License.
+
+No source code from Horizon is redistributed in this repository. Prompts and
+scoring rubrics adapted from Horizon's profiles keep attribution to the
+original project where they are used.

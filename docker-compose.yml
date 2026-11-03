@@ -1,0 +1,34 @@
+# ALTERNATIVA à infra local já existente (containers horizon-pg / horizon-nats no WSL).
+# Use apenas se esses containers NÃO estiverem rodando — as portas são as mesmas
+# (5450 Postgres, 4230 NATS, 8230 monitor NATS), então o DSN do projeto não muda.
+#
+#   docker compose up -d      # sobe pgvector pg16 + NATS JetStream
+#   docker compose down       # para (o volume pgdata é preservado)
+name: horizon-go
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: horizon
+      POSTGRES_PASSWORD: horizon
+      POSTGRES_DB: horizon
+    ports:
+      - "5450:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U horizon -d horizon"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  nats:
+    image: nats:2.10
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4230:4222"
+      - "8230:8222"
+
+volumes:
+  pgdata:
