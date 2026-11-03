@@ -36,3 +36,28 @@ type FetchRunRepo interface {
 type ItemPublisher interface {
 	PublishRaw(ctx context.Context, runID string, items []domain.Item) error
 }
+
+// ChatRequest is one completion call. JSON asks the model for a JSON object.
+type ChatRequest struct {
+	System string
+	User   string
+	JSON   bool
+}
+
+// LLM is a chat-completion model.
+type LLM interface {
+	Model() string
+	Chat(ctx context.Context, req ChatRequest) (string, error)
+}
+
+// Embedder turns texts into vectors (one per input, same order).
+type Embedder interface {
+	Model() string
+	Embed(ctx context.Context, texts []string) ([][]float32, error)
+}
+
+// AICache stores model outputs keyed by kind + content hash.
+type AICache interface {
+	Get(ctx context.Context, kind, key string) ([]byte, bool, error)
+	Put(ctx context.Context, kind, key, model string, value []byte) error
+}
