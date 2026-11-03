@@ -8,7 +8,7 @@
 //	worker --once --ai=false                collect only (Phase 1 behaviour)
 //	worker [--interval 30m]                 collect periodically and run every stage continuously
 //
-// DATABASE_URL, NATS_URL, OLLAMA_URL, LLM_MODEL and EMBED_MODEL override the
+// DATABASE_URL, NATS_URL, OLLAMA_URL, LLM_MODEL, LLM_NUM_CTX and EMBED_MODEL override the
 // local defaults from CLAUDE.md.
 package main
 
@@ -104,6 +104,7 @@ func newAIStages(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, bus 
 		URL:        getenv("OLLAMA_URL", ollama.DefaultURL),
 		ChatModel:  getenv("LLM_MODEL", ollama.DefaultChatModel),
 		EmbedModel: getenv("EMBED_MODEL", ollama.DefaultEmbedModel),
+		NumCtx:     envInt("LLM_NUM_CTX", ollama.DefaultNumCtx),
 	})
 	an := &app.Analyzer{LLM: oc.LLM(), Embedder: oc.Embedder(), Cache: postgres.AICache{DB: pool}}
 	repo := postgres.AIRepo{DB: pool}

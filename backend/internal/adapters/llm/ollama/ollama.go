@@ -22,6 +22,9 @@ const (
 	DefaultChatModel   = "qwen3:14b"
 	DefaultEmbedModel  = "nomic-embed-text"
 	DefaultTemperature = 0.3
+	// DefaultNumCtx keeps qwen3:14b fully in 12 GB of VRAM; the server default
+	// (40960) spills to the CPU and is ~4x slower. Prompts stay under ~2k tokens.
+	DefaultNumCtx = 8192
 	// The first call loads the model into VRAM (~1 min for qwen3:14b).
 	DefaultTimeout = 3 * time.Minute
 )
@@ -32,6 +35,7 @@ type Config struct {
 	ChatModel   string
 	EmbedModel  string
 	Temperature float64
+	NumCtx      int
 	Client      *http.Client
 }
 
@@ -41,6 +45,7 @@ type Client struct {
 	chat   string
 	embed  string
 	temp   float64
+	numCtx int
 	client *http.Client
 }
 
@@ -56,6 +61,7 @@ func New(cfg Config) *Client {
 		chat:   cfg.ChatModel,
 		embed:  cfg.EmbedModel,
 		temp:   cfg.Temperature,
+		numCtx: cfg.NumCtx,
 		client: cfg.Client,
 	}
 	if c.base == "" {
@@ -69,6 +75,9 @@ func New(cfg Config) *Client {
 	}
 	if c.temp == 0 {
 		c.temp = DefaultTemperature
+	}
+	if c.numCtx == 0 {
+		c.numCtx = DefaultNumCtx
 	}
 	if c.client == nil {
 		c.client = &http.Client{Timeout: DefaultTimeout}
@@ -149,7 +158,7 @@ func (m *Chat) Chat(ctx context.Context, req ports.ChatRequest) (string, error) 
 		Model:   m.c.chat,
 		Stream:  false,
 		Think:   false,
-		Options: map[string]any{"temperature": m.c.temp},
+		Options: map[string]any{"temperature": m.c.temp, "num_ctx": m.c.numCtx},
 	}
 	if req.JSON {
 		body.Format = "json"

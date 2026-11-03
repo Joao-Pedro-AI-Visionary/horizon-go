@@ -32,7 +32,7 @@ func TestChatRequestShape(t *testing.T) {
 	if got["model"] != DefaultChatModel || got["think"] != false || got["stream"] != false || got["format"] != "json" {
 		t.Errorf("request = %v", got)
 	}
-	if opts, _ := got["options"].(map[string]any); opts["temperature"] != 0.3 {
+	if opts, _ := got["options"].(map[string]any); opts["temperature"] != 0.3 || opts["num_ctx"] != float64(DefaultNumCtx) {
 		t.Errorf("temperature = %v", got["options"])
 	}
 	msgs, _ := got["messages"].([]any)
