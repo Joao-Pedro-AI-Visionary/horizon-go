@@ -1,0 +1,10 @@
+upstream/
+node_modules/
+videos/
+dist/
+*.exe
+bin/
+.env
+test-results/
+playwright-report/
+coverage.out
