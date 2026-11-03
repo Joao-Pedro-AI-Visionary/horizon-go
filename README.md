@@ -11,6 +11,21 @@ Thysrael (Python, MIT). O plano e a análise do original estão em [`PLANO.md`](
 |---|---|---|
 | ![Feed](docs/screenshots/1-feed-desktop.png) | ![Detalhe](docs/screenshots/2-item-desktop.png) | ![Métricas](docs/screenshots/5-metrics-desktop.png) |
 
+## Antes / Depois
+
+Primeira versão do dashboard (esquerda) e a versão atual, após o redesign editorial e os widgets
+da segunda referência (direita). Feed, detalhe do item e métricas; decisões em
+[`docs/DESIGN.md`](docs/DESIGN.md). As capturas originais ficam em
+[`docs/screenshots/before/`](docs/screenshots/before/).
+
+**Desktop (1440x900)**
+
+![Antes e depois no desktop: feed, item e métricas](docs/screenshots/before-after-desktop.png)
+
+**Mobile (390x844)**
+
+![Antes e depois no mobile: feed, item e métricas](docs/screenshots/before-after-mobile.png)
+
 ## O que ele faz
 
 - **Coleta concorrente**: uma goroutine por fonte (`errgroup` + `context`), fan-in num channel,
