@@ -84,6 +84,7 @@ type ScoreRow struct {
 	Author     string
 	SourceKind string
 	Scored     bool
+	Failed     bool // gave up after too many invalid outputs
 }
 
 // AIRepo holds the queries of the scoring and dedup stages.
@@ -118,9 +119,9 @@ func (r AIRepo) ids(ctx context.Context, q string, args ...any) ([]int64, error)
 func (r AIRepo) LoadScoreRow(ctx context.Context, id int64) (ScoreRow, error) {
 	var s ScoreRow
 	err := r.DB.QueryRow(ctx, `
-SELECT i.id, i.title, i.url, i.content, i.author, s.kind, i.score IS NOT NULL
+SELECT i.id, i.title, i.url, i.content, i.author, s.kind, i.score IS NOT NULL, i.status = 'failed'
 FROM items i JOIN sources s ON s.id = i.source_id WHERE i.id = $1`, id).
-		Scan(&s.ID, &s.Title, &s.URL, &s.Content, &s.Author, &s.SourceKind, &s.Scored)
+		Scan(&s.ID, &s.Title, &s.URL, &s.Content, &s.Author, &s.SourceKind, &s.Scored, &s.Failed)
 	return s, mapErr(err)
 }
 
@@ -142,17 +143,22 @@ WHERE id = $1 AND score IS NULL`,
 	return tag.RowsAffected() == 1, nil
 }
 
-// RecordScoreFailure counts a failed attempt; at maxAttempts the item is
-// marked 'failed' and leaves the queue.
-func (r AIRepo) RecordScoreFailure(ctx context.Context, id int64, cause error, maxAttempts int) error {
-	msg := cause.Error()
+// RecordScoreFailure stores the last error. When counts is set the failure
+// spends an attempt, and at maxAttempts the item is marked 'failed' and
+// leaves the queue; infrastructure errors pass counts=false.
+func (r AIRepo) RecordScoreFailure(ctx context.Context, id int64, cause error, counts bool, maxAttempts int) error {
+	msg := []rune(cause.Error())
 	if len(msg) > 1000 {
 		msg = msg[:1000]
 	}
+	inc := 0
+	if counts {
+		inc = 1
+	}
 	_, err := r.DB.Exec(ctx, `
-UPDATE items SET score_attempts = score_attempts + 1, last_error = $2,
-       status = CASE WHEN score_attempts + 1 >= $3 THEN 'failed' ELSE status END, updated_at = now()
-WHERE id = $1 AND score IS NULL`, id, msg, maxAttempts)
+UPDATE items SET score_attempts = score_attempts + $4, last_error = $2,
+       status = CASE WHEN score_attempts + $4 >= $3 THEN 'failed' ELSE status END, updated_at = now()
+WHERE id = $1 AND score IS NULL`, id, string(msg), maxAttempts, inc)
 	return err
 }
 

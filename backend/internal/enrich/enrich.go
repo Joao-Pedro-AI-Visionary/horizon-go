@@ -35,10 +35,53 @@ const (
 	DefaultMaxAttempts = 5
 	DefaultWindow      = 72 * time.Hour
 	DefaultNeighbors   = 10
-	// AckWait covers a cold model load plus retries.
-	AckWait  = 5 * time.Minute
-	nakDelay = 5 * time.Second
+	// AckWait is the redelivery timer; handlers renew it with InProgress
+	// every AckWait/3 while a slow model call runs.
+	AckWait = 5 * time.Minute
+	// DefaultBackfillEvery re-queues, in continuous mode, work whose message
+	// was lost or terminated.
+	DefaultBackfillEvery = 10 * time.Minute
+	nakDelay             = 5 * time.Second
 )
+
+// heartbeat keeps msg in progress until the returned stop is called.
+func heartbeat(msg jetstream.Msg) (stop func()) {
+	if msg == nil {
+		return func() {}
+	}
+	_ = msg.InProgress()
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(AckWait / 3)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				_ = msg.InProgress()
+			}
+		}
+	}()
+	return func() { close(done) }
+}
+
+// every calls fn at each tick until ctx is done.
+func every(ctx context.Context, d time.Duration, fn func()) {
+	if d <= 0 {
+		d = DefaultBackfillEvery
+	}
+	t := time.NewTicker(d)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			fn()
+		}
+	}
+}
 
 func settle(msg jetstream.Msg, err error, log *slog.Logger) {
 	if msg == nil {
@@ -49,7 +92,7 @@ func settle(msg jetstream.Msg, err error, log *slog.Logger) {
 		return
 	}
 	if md, mdErr := msg.Metadata(); mdErr == nil && md.NumDelivered >= natsbus.MaxDeliver {
-		log.Warn("giving up on message, backfill will retry from the database", "subject", msg.Subject(), "err", err)
+		log.Warn("giving up on message, the periodic backfill retries from the database", "subject", msg.Subject(), "err", err)
 		_ = msg.Term()
 		return
 	}
@@ -68,7 +111,9 @@ type Scorer struct {
 	Bus         *natsbus.Bus
 	Workers     int
 	MaxAttempts int
-	Log         *slog.Logger
+	// BackfillEvery is the period of the database sweep in Run.
+	BackfillEvery time.Duration
+	Log           *slog.Logger
 
 	Stats ScoreStats
 }
@@ -95,13 +140,13 @@ func (s *Scorer) maxAttempts() int {
 }
 
 // ScoreItem analyzes and embeds one item, then publishes items.scored. It
-// returns false when the item already had a score.
+// returns false when the item already had a score or was given up on.
 func (s *Scorer) ScoreItem(ctx context.Context, id int64) (bool, error) {
 	row, err := s.Repo.LoadScoreRow(ctx, id)
 	if err != nil {
 		return false, err
 	}
-	if row.Scored {
+	if row.Scored || row.Failed {
 		return false, nil
 	}
 	a, err := s.Analyzer.Analyze(ctx, app.ScoreInput{
@@ -132,15 +177,17 @@ type scoreJob struct {
 }
 
 func (s *Scorer) process(ctx context.Context, j scoreJob) {
-	if j.msg != nil {
-		_ = j.msg.InProgress()
-	}
+	stop := heartbeat(j.msg)
 	ok, err := s.ScoreItem(ctx, j.id)
+	stop()
 	switch {
 	case err != nil:
 		s.Stats.Failed.Add(1)
 		s.log().Error("score failed", "item", j.id, "err", err)
-		if rerr := s.Repo.RecordScoreFailure(ctx, j.id, err, s.maxAttempts()); rerr != nil {
+		// Only output the model keeps getting wrong for this item spends an
+		// attempt; outages, cancellation and config errors do not.
+		counts := errors.Is(err, app.ErrInvalidOutput)
+		if rerr := s.Repo.RecordScoreFailure(context.WithoutCancel(ctx), j.id, err, counts, s.maxAttempts()); rerr != nil {
 			s.log().Error("record failure", "item", j.id, "err", rerr)
 		}
 	case ok:
@@ -151,23 +198,35 @@ func (s *Scorer) process(ctx context.Context, j scoreJob) {
 	settle(j.msg, err, s.log())
 }
 
-// startPool runs the workers; close jobs and call the returned wait.
+// startPool runs the workers. The jobs channel is never closed (Consume
+// callbacks may outlive Stop); wait stops the workers once the current jobs
+// are done. Senders must give up on ctx.Done.
 func (s *Scorer) startPool(ctx context.Context) (chan<- scoreJob, func()) {
 	jobs := make(chan scoreJob)
+	done := make(chan struct{})
 	var wg sync.WaitGroup
 	for range s.workers() {
 		wg.Go(func() {
-			for j := range jobs {
-				s.process(ctx, j)
+			for {
+				select {
+				case j := <-jobs:
+					s.process(ctx, j)
+				case <-done:
+					return
+				}
 			}
 		})
 	}
-	return jobs, func() { close(jobs); wg.Wait() }
+	return jobs, func() { close(done); wg.Wait() }
 }
 
 // rawHandler resolves an items.raw message to its row and queues it.
 func (s *Scorer) rawHandler(ctx context.Context, jobs chan<- scoreJob) func(jetstream.Msg) {
 	return func(msg jetstream.Msg) {
+		if ctx.Err() != nil {
+			_ = msg.Nak()
+			return
+		}
 		var it domain.Item
 		if err := json.Unmarshal(msg.Data(), &it); err != nil || it.URLHash == "" {
 			_ = msg.Term()
@@ -218,27 +277,24 @@ func (s *Scorer) Drain(ctx context.Context, cons jetstream.Consumer) error {
 	return err
 }
 
-// Run backfills, then consumes items.raw until ctx is cancelled.
+// Run consumes items.raw until ctx is cancelled and sweeps the database for
+// unscored items at start and every BackfillEvery.
 func (s *Scorer) Run(ctx context.Context, cons jetstream.Consumer) error {
 	jobs, wait := s.startPool(ctx)
-	// Callbacks may still be running after Stop; the pool closes only after
-	// every one of them returned (they give up on ctx.Done).
-	var inflight sync.WaitGroup
-	defer func() { inflight.Wait(); wait() }()
-	if err := s.backfill(ctx, jobs); err != nil {
-		return err
-	}
-	h := s.rawHandler(ctx, jobs)
-	cc, err := cons.Consume(func(msg jetstream.Msg) {
-		inflight.Add(1)
-		defer inflight.Done()
-		h(msg)
-	}, jetstream.PullMaxMessages(s.workers()))
+	defer wait()
+	cc, err := cons.Consume(s.rawHandler(ctx, jobs), jetstream.PullMaxMessages(s.workers()))
 	if err != nil {
 		return err
 	}
-	<-ctx.Done()
+	sweep := func() {
+		if err := s.backfill(ctx, jobs); err != nil && ctx.Err() == nil {
+			s.log().Error("score backfill", "err", err)
+		}
+	}
+	sweep()
+	every(ctx, s.BackfillEvery, sweep)
 	cc.Stop()
+	<-cc.Closed()
 	return nil
 }
 
@@ -290,8 +346,12 @@ type DedupStats struct {
 	Processed, NewClusters, Joined, Direct, AskedLLM, Confirmed, Skipped, Failed int
 }
 
-// Deduper is the dedup stage. It runs serially: cluster writes also take an
-// advisory lock, so several processes stay consistent.
+// Deduper is the dedup stage. Items are handled one at a time.
+//
+// Run a single deduper per database: the neighbour search and the LLM call
+// happen outside the advisory lock (only cluster writes take it), so two
+// processes deduping copies of the same story at the same instant would not
+// see each other and could create two clusters.
 type Deduper struct {
 	Repo       postgres.AIRepo
 	Analyzer   *app.Analyzer
@@ -299,7 +359,9 @@ type Deduper struct {
 	Thresholds domain.Thresholds
 	Window     time.Duration
 	Neighbors  int
-	Log        *slog.Logger
+	// BackfillEvery is the period of the database sweep in Run.
+	BackfillEvery time.Duration
+	Log           *slog.Logger
 
 	mu    sync.Mutex
 	Stats DedupStats
@@ -390,8 +452,10 @@ func (d *Deduper) handler(ctx context.Context) func(jetstream.Msg) {
 			_ = msg.Term()
 			return
 		}
-		_ = msg.InProgress()
-		settle(msg, d.handleID(ctx, ev.ItemID), d.log())
+		stop := heartbeat(msg)
+		err := d.handleID(ctx, ev.ItemID)
+		stop()
+		settle(msg, err, d.log())
 	}
 }
 
@@ -426,16 +490,21 @@ func (d *Deduper) Drain(ctx context.Context, cons jetstream.Consumer) error {
 	return d.backfill(ctx)
 }
 
-// Run backfills, then consumes items.scored until ctx is cancelled.
+// Run consumes items.scored until ctx is cancelled and sweeps the database
+// for scored, unclustered items at start and every BackfillEvery.
 func (d *Deduper) Run(ctx context.Context, cons jetstream.Consumer) error {
-	if err := d.backfill(ctx); err != nil {
-		d.log().Error("dedup backfill", "err", err)
-	}
 	cc, err := cons.Consume(d.handler(ctx), jetstream.PullMaxMessages(1))
 	if err != nil {
 		return err
 	}
-	<-ctx.Done()
+	sweep := func() {
+		if err := d.backfill(ctx); err != nil && ctx.Err() == nil {
+			d.log().Error("dedup backfill", "err", err)
+		}
+	}
+	sweep()
+	every(ctx, d.BackfillEvery, sweep)
 	cc.Stop()
+	<-cc.Closed()
 	return nil
 }
