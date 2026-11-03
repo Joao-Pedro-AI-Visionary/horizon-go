@@ -99,7 +99,7 @@ async function generate() {
               data-testid="digest-item"
               @click="open(d.date)"
             >
-              <span class="block font-display font-semibold capitalize">{{ fmtDay(d.date) }}</span>
+              <span class="block font-display font-semibold">{{ fmtDay(d.date) }}</span>
               <span class="block font-mono text-xs" :class="d.date === selectedDate ? 'text-ink/75' : 'text-muted'">
                 {{ d.item_count }} itens · {{ d.considered }} considerados
               </span>

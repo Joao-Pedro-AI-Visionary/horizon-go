@@ -23,7 +23,8 @@ export function fmtDateTime(iso: string | null | undefined): string {
 
 /** fmtDay formats a YYYY-MM-DD calendar day without shifting its timezone. */
 export function fmtDay(day: string): string {
-  return df.format(new Date(`${day}T00:00:00Z`))
+  const s = df.format(new Date(`${day}T00:00:00Z`))
+  return s.charAt(0).toUpperCase() + s.slice(1)
 }
 
 export function shortDay(day: string): string {

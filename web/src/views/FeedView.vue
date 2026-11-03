@@ -37,6 +37,13 @@ function setFilter(patch: Record<string, string | number | undefined>) {
   router.replace({ query: next })
 }
 
+// On mobile the filters below the search are collapsed behind a toggle.
+const filtersOpen = ref(false)
+const activeFilterCount = computed(() => {
+  const f = filters.value
+  return [f.tag, f.source_id, f.min_score, f.period !== '7d' ? f.period : undefined, f.sort !== 'score' ? f.sort : undefined].filter(Boolean).length
+})
+
 const searchText = ref(filters.value.q ?? '')
 let debounce: ReturnType<typeof setTimeout> | undefined
 watch(searchText, (v) => {
@@ -164,6 +171,18 @@ async function runPipeline() {
             <input id="f-search" v-model="searchText" type="search" class="field pl-9" placeholder="Título, resumo ou motivo…" maxlength="200" data-testid="filter-search" />
           </div>
         </div>
+        <button
+          type="button"
+          class="btn-ghost w-full sm:hidden"
+          :aria-expanded="filtersOpen"
+          aria-controls="feed-more-filters"
+          data-testid="toggle-filters"
+          @click="filtersOpen = !filtersOpen"
+        >
+          <AppIcon name="filter" :size="16" />
+          {{ filtersOpen ? 'Ocultar filtros' : 'Filtros' }}<span v-if="activeFilterCount" class="rounded-full bg-primary px-2 font-mono text-xs text-ink">{{ activeFilterCount }}</span>
+        </button>
+        <div id="feed-more-filters" class="contents" :class="filtersOpen ? '' : 'max-sm:hidden'">
         <div class="lg:col-span-2">
           <label for="f-source" class="label">Fonte</label>
           <select id="f-source" class="field" :value="filters.source_id ?? ''" data-testid="filter-source" @change="setFilter({ source_id: ($event.target as HTMLSelectElement).value || undefined })">
@@ -220,6 +239,7 @@ async function runPipeline() {
             />
             <button v-if="hasFilters" type="button" class="btn-ghost shrink-0" data-testid="clear-filters" @click="router.replace({ query: {} })">Limpar</button>
           </div>
+        </div>
         </div>
       </div>
     </section>

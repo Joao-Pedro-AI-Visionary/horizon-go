@@ -71,7 +71,7 @@ function back() {
           <div class="min-w-0 flex-1">
             <p class="flex flex-wrap items-center gap-2 text-xs text-muted">
               <span class="chip">{{ kindLabel[item.source_kind] ?? item.source_kind }}</span>
-              <span class="font-medium text-white/85">{{ item.source_name }}</span>
+              <span v-if="item.source_name !== kindLabel[item.source_kind]" class="font-medium text-white/85">{{ item.source_name }}</span>
               <span v-if="item.author">· por {{ item.author }}</span>
             </p>
             <h1 class="mt-2 font-display text-2xl leading-tight font-bold break-words md:text-3xl">{{ item.title }}</h1>

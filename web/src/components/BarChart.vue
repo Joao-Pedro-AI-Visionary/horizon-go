@@ -32,9 +32,11 @@ onMounted(() => {
 onUnmounted(() => ro?.disconnect())
 
 const H = computed(() => props.height ?? 220)
-const pad = { top: 12, right: 8, bottom: 26, left: 44 }
-const plotW = computed(() => width.value - pad.left - pad.right)
-const plotH = computed(() => H.value - pad.top - pad.bottom)
+const maxLabelChars = computed(() => Math.max(...ticks.value.map((t) => fmt(t).length)))
+// Left padding fits the widest y tick (10px mono ≈ 6.2px per char).
+const pad = computed(() => ({ top: 12, right: 8, bottom: 26, left: Math.ceil(maxLabelChars.value * 6.2) + 14 }))
+const plotW = computed(() => width.value - pad.value.left - pad.value.right)
+const plotH = computed(() => H.value - pad.value.top - pad.value.bottom)
 
 function niceMax(v: number): number {
   if (v <= 0) return 4
@@ -51,18 +53,18 @@ const barW = computed(() => {
   return Math.max(2, Math.min(28, (groupW.value * 0.72 - (n - 1) * 2) / n))
 })
 const labelEvery = computed(() => Math.max(1, Math.ceil(props.labels.length / Math.max(1, Math.floor(plotW.value / 46)))))
-const y = (v: number) => pad.top + plotH.value - (v / max.value) * plotH.value
+const y = (v: number) => pad.value.top + plotH.value - (v / max.value) * plotH.value
 
 function barPath(x: number, v: number): string {
   const h = (v / max.value) * plotH.value
   if (h <= 0) return ''
   const r = Math.min(4, barW.value / 2, h)
-  const top = pad.top + plotH.value - h
-  const b = pad.top + plotH.value
+  const top = pad.value.top + plotH.value - h
+  const b = pad.value.top + plotH.value
   const w = barW.value
   return `M${x},${b}V${top + r}Q${x},${top} ${x + r},${top}H${x + w - r}Q${x + w},${top} ${x + w},${top + r}V${b}Z`
 }
-const groupX = (i: number) => pad.left + i * groupW.value
+const groupX = (i: number) => pad.value.left + i * groupW.value
 const barX = (i: number, j: number) => {
   const n = props.series.length
   const total = n * barW.value + (n - 1) * 2
@@ -96,7 +98,7 @@ const tip = computed(() => {
           <template v-for="(l, i) in labels" :key="l">
             <rect v-if="active === i" :x="groupX(i)" :y="pad.top" :width="groupW" :height="plotH" fill="#ffffff" fill-opacity="0.05" />
             <path v-for="(s, j) in series" :key="s.name" :d="barPath(barX(i, j), s.values[i] ?? 0)" :fill="s.color" />
-            <text v-if="i % labelEvery === 0" :x="groupX(i) + groupW / 2" :y="H - 8" text-anchor="middle" class="fill-muted font-mono text-[10px]">{{ l }}</text>
+            <text v-if="(labels.length - 1 - i) % labelEvery === 0" :x="groupX(i) + groupW / 2" :y="H - 8" text-anchor="middle" class="fill-muted font-mono text-[10px]">{{ l }}</text>
           </template>
         </g>
         <!-- Hit targets: full-height per group, keyboard focusable. -->

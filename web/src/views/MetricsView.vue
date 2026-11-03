@@ -164,7 +164,8 @@ const statusLabel: Record<string, string> = { raw: 'aguardando nota', scored: 'c
           <li v-for="s in sources" :key="s.source_id">
             <div class="flex flex-wrap items-baseline justify-between gap-x-3 text-sm">
               <span class="font-medium break-words">
-                {{ s.name }} <span class="text-xs text-muted">{{ kindLabel[s.kind] }}{{ s.enabled ? '' : ' · desativada' }}</span>
+                {{ s.name }}
+                <span class="text-xs text-muted">{{ [s.name !== kindLabel[s.kind] ? kindLabel[s.kind] : '', s.enabled ? '' : 'desativada'].filter(Boolean).join(' · ') }}</span>
               </span>
               <span class="font-mono text-xs text-muted">média <span class="text-primary">{{ fmtScore(s.avg_score) }}</span></span>
             </div>

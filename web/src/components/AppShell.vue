@@ -49,10 +49,8 @@ function isActive(name: string, routeName: unknown) {
     >
 
     <!-- Sidebar / rail -->
-    <aside
-      class="sticky top-0 hidden h-dvh shrink-0 flex-col border-r border-line bg-surface md:flex md:w-20 xl:w-64"
-      aria-label="Navegação principal"
-    >
+    <div class="hidden shrink-0 border-r border-line bg-surface md:block md:w-20 xl:w-64">
+    <aside class="sticky top-0 flex h-dvh flex-col" aria-label="Navegação principal">
       <RouterLink to="/" class="flex items-center gap-3 px-4 py-5 xl:px-6" data-testid="nav-logo" aria-label="Radar by JpDev — início">
         <img src="/jpdev-logo.png" alt="" class="h-10 w-auto shrink-0" width="34" height="40" />
         <span class="hidden leading-tight xl:block">
@@ -80,6 +78,7 @@ function isActive(name: string, routeName: unknown) {
         <span class="sr-only xl:not-sr-only">{{ healthText[health] }}</span>
       </div>
     </aside>
+    </div>
 
     <!-- Mobile top bar -->
     <header class="sticky top-0 z-30 flex items-center justify-between border-b border-line bg-ink/90 px-4 py-3 backdrop-blur md:hidden">
