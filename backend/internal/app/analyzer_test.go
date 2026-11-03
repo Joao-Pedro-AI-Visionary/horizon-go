@@ -10,6 +10,7 @@ import (
 
 	"github.com/jpdev/horizon-go/internal/domain"
 	"github.com/jpdev/horizon-go/internal/ports"
+	"github.com/jpdev/horizon-go/internal/retry"
 )
 
 // fakeLLM replays scripted answers (test-only).
@@ -75,7 +76,7 @@ func (c *memCache) Put(_ context.Context, kind, key, _ string, v []byte) error {
 	return nil
 }
 
-var fastRetry = RetryPolicy{Attempts: 3, Base: time.Millisecond, Max: 2 * time.Millisecond}
+var fastRetry = retry.Policy{Attempts: 3, Base: time.Millisecond, Max: 2 * time.Millisecond}
 
 func TestParseAnalysis(t *testing.T) {
 	cases := []struct {
@@ -169,7 +170,7 @@ func TestAnalyzeGivesUpAfterRetries(t *testing.T) {
 }
 
 func TestAnalyzeStopsOnPermanentError(t *testing.T) {
-	llm := &fakeLLM{errs: []error{Permanent(errors.New("model not found"))}, answers: []string{"x"}}
+	llm := &fakeLLM{errs: []error{retry.Permanent(errors.New("model not found"))}, answers: []string{"x"}}
 	a := &Analyzer{LLM: llm, Retry: fastRetry}
 	if _, err := a.Analyze(context.Background(), ScoreInput{Title: "T"}); err == nil {
 		t.Fatal("want error")
@@ -221,18 +222,5 @@ func TestSameEventNoDuplicates(t *testing.T) {
 	got, err := a.SameEvent(context.Background(), DedupCandidate{ItemID: 1, Title: "a"}, []DedupCandidate{{ItemID: 2, Title: "b"}})
 	if err != nil || len(got) != 0 {
 		t.Fatalf("got %v, %v", got, err)
-	}
-}
-
-func TestRetryBackoffRespectsContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	calls := 0
-	err := Retry(ctx, RetryPolicy{Attempts: 5, Base: time.Second, Max: time.Second}, func(context.Context) error {
-		calls++
-		return errors.New("transient")
-	})
-	if err == nil || calls != 1 {
-		t.Fatalf("err=%v calls=%d, want stop after first call on cancelled ctx", err, calls)
 	}
 }

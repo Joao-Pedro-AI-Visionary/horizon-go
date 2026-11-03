@@ -1,4 +1,5 @@
-package app
+// Package retry runs a call with exponential backoff and full jitter.
+package retry
 
 import (
 	"context"
@@ -7,15 +8,15 @@ import (
 	"time"
 )
 
-// RetryPolicy is exponential backoff with full jitter.
-type RetryPolicy struct {
+// Policy is exponential backoff with full jitter.
+type Policy struct {
 	Attempts int           // total calls, including the first
 	Base     time.Duration // delay before the second call
 	Max      time.Duration // delay cap
 }
 
-// DefaultRetry is used for model calls.
-var DefaultRetry = RetryPolicy{Attempts: 3, Base: 500 * time.Millisecond, Max: 8 * time.Second}
+// Default is used for model calls.
+var Default = Policy{Attempts: 3, Base: 500 * time.Millisecond, Max: 8 * time.Second}
 
 type permanentError struct{ err error }
 
@@ -36,9 +37,9 @@ func IsPermanent(err error) bool {
 	return errors.As(err, &p)
 }
 
-// Retry calls fn until it succeeds, returns a permanent error, the attempts
+// Do calls fn until it succeeds, returns a permanent error, the attempts
 // run out or ctx is done. It returns the last error.
-func Retry(ctx context.Context, p RetryPolicy, fn func(context.Context) error) error {
+func Do(ctx context.Context, p Policy, fn func(context.Context) error) error {
 	if p.Attempts < 1 {
 		p.Attempts = 1
 	}

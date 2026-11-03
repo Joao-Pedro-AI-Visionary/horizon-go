@@ -12,6 +12,7 @@ import (
 
 	"github.com/jpdev/horizon-go/internal/domain"
 	"github.com/jpdev/horizon-go/internal/ports"
+	"github.com/jpdev/horizon-go/internal/retry"
 )
 
 // Prompts below are adapted from Thysrael/Horizon (MIT, © 2026 Thysrael):
@@ -211,12 +212,12 @@ type Analyzer struct {
 	LLM      ports.LLM
 	Embedder ports.Embedder
 	Cache    ports.AICache // optional
-	Retry    RetryPolicy
+	Retry    retry.Policy
 }
 
-func (a *Analyzer) policy() RetryPolicy {
+func (a *Analyzer) policy() retry.Policy {
 	if a.Retry.Attempts == 0 {
-		return DefaultRetry
+		return retry.Default
 	}
 	return a.Retry
 }
@@ -249,7 +250,7 @@ func (a *Analyzer) Analyze(ctx context.Context, in ScoreInput) (domain.Analysis,
 		return out, nil
 	}
 	sys, user := ScoringPrompt(in)
-	err := Retry(ctx, a.policy(), func(ctx context.Context) error {
+	err := retry.Do(ctx, a.policy(), func(ctx context.Context) error {
 		raw, err := a.LLM.Chat(ctx, ports.ChatRequest{System: sys, User: user, JSON: true})
 		if err != nil {
 			return err
@@ -281,7 +282,7 @@ func (a *Analyzer) Embed(ctx context.Context, text string) ([]float32, error) {
 	if a.cached(ctx, "embed", key, &out) && len(out) > 0 {
 		return out, nil
 	}
-	err := Retry(ctx, a.policy(), func(ctx context.Context) error {
+	err := retry.Do(ctx, a.policy(), func(ctx context.Context) error {
 		vs, err := a.Embedder.Embed(ctx, []string{text})
 		if err != nil {
 			return err
@@ -339,7 +340,7 @@ func (a *Analyzer) SameEvent(ctx context.Context, target DedupCandidate, cands [
 	var groups [][]any
 	if !a.cached(ctx, "dedup", key, &groups) {
 		user := fmt.Sprintf(dedupUser, strings.Join(lines, "\n\n"))
-		err := Retry(ctx, a.policy(), func(ctx context.Context) error {
+		err := retry.Do(ctx, a.policy(), func(ctx context.Context) error {
 			raw, err := a.LLM.Chat(ctx, ports.ChatRequest{System: dedupSystem, User: user, JSON: true})
 			if err != nil {
 				return err
