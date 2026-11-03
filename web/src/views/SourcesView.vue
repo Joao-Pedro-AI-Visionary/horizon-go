@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ApiError, api, errorMessage } from '../api/client'
 import type { CollectReport, Settings, Source } from '../api/types'
 import AppIcon from '../components/AppIcon.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import SourceForm from '../components/SourceForm.vue'
+import PageHeader from '../components/PageHeader.vue'
 import StatePanel from '../components/StatePanel.vue'
 import { fmtDateTime, fmtNumber, fmtRelative, kindLabel } from '../lib/format'
 import { useToasts } from '../stores/toast'
@@ -105,6 +106,8 @@ function configSummary(s: Source): string {
   return parts.join(' · ') || 'configuração padrão'
 }
 
+const enabledCount = computed(() => sources.value.filter((s) => s.enabled).length)
+
 // --- Settings ---
 const settings = ref<Settings | null>(null)
 const draft = reactive<Settings>({ score_threshold: 6, digest_max_items: 20, digest_per_source: 0, digest_cron: '', timezone: '' })
@@ -151,41 +154,40 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="mx-auto max-w-7xl">
-    <header class="flex flex-wrap items-end justify-between gap-4">
-      <div>
-        <p class="eyebrow">Radar · fontes & config</p>
-        <h1 class="mt-1 font-display text-3xl font-bold md:text-4xl">Fontes e configuração</h1>
-        <p class="mt-1 text-sm text-muted">Onde o radar escuta e como ele decide o que entra no digest.</p>
-      </div>
-      <button type="button" class="btn-primary" data-testid="source-new" @click="openCreate">
-        <AppIcon name="plus" :size="16" /> Nova fonte
-      </button>
-    </header>
+  <div>
+    <PageHeader index="03" section="Fontes & Config" title="Fontes e configuração" :muted="2" lead="Onde o radar escuta e como ele decide o que entra no digest.">
+      <template #meta><span class="num">{{ sources.length }}</span> fontes · <span class="num">{{ enabledCount }}</span> ativas</template>
+      <template #actions>
+        <button type="button" class="btn-primary" data-testid="source-new" @click="openCreate">
+          <AppIcon name="plus" :size="16" /> Nova fonte
+        </button>
+      </template>
+    </PageHeader>
 
-    <div class="mt-5 grid gap-4 xl:grid-cols-3">
+    <div class="mt-8 grid gap-10 xl:grid-cols-12">
       <!-- Sources -->
-      <section class="xl:col-span-2" aria-labelledby="sources-h">
-        <h2 id="sources-h" class="sr-only">Fontes</h2>
-        <div v-if="loading && sources.length === 0" class="grid gap-3" data-testid="sources-loading">
-          <div v-for="i in 3" :key="i" class="card skeleton h-32" />
+      <section class="min-w-0 xl:col-span-8" aria-labelledby="sources-h">
+        <h2 id="sources-h" class="eyebrow mb-3">Fontes cadastradas</h2>
+        <div v-if="loading && sources.length === 0" class="grid gap-3" data-testid="sources-loading" aria-hidden="true">
+          <div v-for="i in 3" :key="i" class="skeleton h-36" />
         </div>
         <StatePanel v-else-if="error" kind="error" title="Não foi possível carregar as fontes" :detail="error" @retry="load" />
         <StatePanel v-else-if="sources.length === 0" kind="empty" title="Nenhuma fonte cadastrada" detail="Cadastre um feed RSS, um subreddit ou o Hacker News para começar a coletar." testid="sources-empty">
           <button type="button" class="btn-primary" data-testid="empty-source-new" @click="openCreate"><AppIcon name="plus" :size="16" /> Nova fonte</button>
         </StatePanel>
-        <ul v-else class="grid gap-3" data-testid="source-list">
-          <li v-for="s in sources" :key="s.id" class="card p-4 sm:p-5" :class="s.enabled ? '' : 'opacity-75'" data-testid="source-card">
-            <div class="flex flex-wrap items-start gap-3">
+        <ul v-else class="border-t border-line" data-testid="source-list">
+          <li v-for="(s, i) in sources" :key="s.id" v-reveal="i" class="border-b border-line py-6" :class="s.enabled ? '' : 'opacity-70'" data-testid="source-card">
+            <div class="flex items-start gap-4">
+              <span class="num hidden pt-1.5 text-sm text-muted sm:block" aria-hidden="true">{{ String(i + 1).padStart(2, '0') }}</span>
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-2">
-                  <h3 class="font-display text-lg font-semibold break-words">{{ s.name }}</h3>
+                  <h3 class="font-display text-xl font-semibold tracking-tight break-words md:text-2xl">{{ s.name }}</h3>
                   <span class="chip">{{ kindLabel[s.kind] }}</span>
                   <span v-if="!s.enabled" class="chip border-accent/50 text-accent">desativada</span>
                 </div>
                 <p class="mt-1 font-mono text-xs break-all text-muted">{{ configSummary(s) }}</p>
               </div>
-              <label class="flex min-h-11 cursor-pointer items-center gap-2 text-sm" :title="s.enabled ? 'Desativar' : 'Ativar'">
+              <label class="flex min-h-11 shrink-0 cursor-pointer items-center gap-2 text-sm" :title="s.enabled ? 'Desativar' : 'Ativar'">
                 <span class="sr-only">{{ s.enabled ? 'Desativar' : 'Ativar' }} {{ s.name }}</span>
                 <input
                   type="checkbox"
@@ -202,31 +204,31 @@ onMounted(() => {
                   :class="s.enabled ? 'border-primary bg-primary' : 'border-line bg-raised'"
                   aria-hidden="true"
                 >
-                  <span class="absolute top-0.5 size-5.5 rounded-full transition-all duration-200" :class="s.enabled ? 'left-6 bg-ink' : 'left-0.5 bg-muted'" />
+                  <span class="absolute top-0.5 size-5.5 rounded-full transition-all duration-300 ease-[var(--ease-out-expo)]" :class="s.enabled ? 'left-6 bg-ink' : 'left-0.5 bg-muted'" />
                 </span>
               </label>
             </div>
 
-            <dl class="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
-              <div class="rounded-xl bg-raised p-3">
-                <dt class="text-xs text-muted">Itens</dt>
-                <dd class="font-mono text-xl font-bold">{{ fmtNumber(s.item_count ?? 0) }}</dd>
+            <dl class="mt-4 grid grid-cols-3 sm:ml-10">
+              <div class="pr-3">
+                <dt class="eyebrow">Itens</dt>
+                <dd class="num mt-1 text-2xl font-bold">{{ fmtNumber(s.item_count ?? 0) }}</dd>
               </div>
-              <div class="rounded-xl bg-raised p-3">
-                <dt class="text-xs text-muted">Última coleta</dt>
-                <dd class="text-sm" :title="fmtDateTime(s.last_fetch?.started_at)">{{ s.last_fetch ? fmtRelative(s.last_fetch.started_at) : 'nunca' }}</dd>
+              <div class="border-l border-line px-3">
+                <dt class="eyebrow">Última coleta</dt>
+                <dd class="mt-1.5 text-sm" :title="fmtDateTime(s.last_fetch?.started_at)">{{ s.last_fetch ? fmtRelative(s.last_fetch.started_at) : 'nunca' }}</dd>
               </div>
-              <div class="col-span-2 rounded-xl bg-raised p-3 sm:col-span-1">
-                <dt class="text-xs text-muted">Status</dt>
-                <dd class="flex items-center gap-1.5 text-sm" :class="s.last_fetch?.status === 'error' ? 'text-danger' : ''">
-                  <AppIcon v-if="s.last_fetch" :name="s.last_fetch.status === 'ok' ? 'check' : 'alert'" :size="14" />
-                  {{ !s.last_fetch ? '—' : s.last_fetch.status === 'ok' ? `ok · ${s.last_fetch.item_count} itens` : 'erro' }}
+              <div class="border-l border-line pl-3">
+                <dt class="eyebrow">Status</dt>
+                <dd class="mt-1.5 flex items-center gap-1.5 text-sm" :class="s.last_fetch?.status === 'error' ? 'text-danger' : ''">
+                  <AppIcon v-if="s.last_fetch" :name="s.last_fetch.status === 'ok' ? 'check' : 'alert'" :size="14" :class="s.last_fetch.status === 'ok' ? 'text-ok' : ''" />
+                  {{ !s.last_fetch ? '—' : s.last_fetch.status === 'ok' ? `ok · ${s.last_fetch.item_count}` : 'erro' }}
                 </dd>
               </div>
             </dl>
-            <p v-if="s.last_fetch?.error" class="mt-3 rounded-lg bg-danger/10 p-3 text-xs break-words text-danger">{{ s.last_fetch.error }}</p>
+            <p v-if="s.last_fetch?.error" class="mt-3 rounded-md bg-danger/10 p-3 text-xs break-words text-danger sm:ml-10">{{ s.last_fetch.error }}</p>
 
-            <div class="mt-4 flex flex-wrap gap-2">
+            <div class="mt-4 flex flex-wrap gap-2 sm:ml-10">
               <button type="button" class="btn-primary" :disabled="!!busy[s.id] || !s.enabled" :title="s.enabled ? undefined : 'Ative a fonte para coletar'" data-testid="source-fetch" @click="collect(s)">
                 <AppIcon name="refresh" :size="16" :class="busy[s.id] === 'fetch' ? 'animate-spin' : ''" />
                 {{ busy[s.id] === 'fetch' ? 'Coletando…' : 'Coletar agora' }}
@@ -239,35 +241,33 @@ onMounted(() => {
       </section>
 
       <!-- Settings -->
-      <section class="card h-fit p-5 xl:sticky xl:top-8" aria-labelledby="settings-h" data-testid="settings">
-        <div class="flex items-center gap-2">
-          <AppIcon name="settings" :size="18" class="text-primary" />
-          <h2 id="settings-h" class="font-display text-lg font-semibold">Digest e nota de corte</h2>
-        </div>
-        <div v-if="settingsLoading && !settings" class="mt-4 space-y-3" data-testid="settings-loading">
+      <section class="card h-fit p-5 md:p-6 xl:sticky xl:top-24 xl:col-span-4" aria-labelledby="settings-h" data-testid="settings">
+        <p class="eyebrow text-primary">Configuração</p>
+        <h2 id="settings-h" class="mt-1 font-display text-2xl font-bold tracking-tight">Digest e nota de corte</h2>
+        <div v-if="settingsLoading && !settings" class="mt-5 space-y-3" data-testid="settings-loading" aria-hidden="true">
           <div v-for="i in 4" :key="i" class="skeleton h-11" />
         </div>
         <StatePanel v-else-if="settingsError" class="mt-4" kind="error" title="Configurações indisponíveis" :detail="settingsError" @retry="loadSettings" />
-        <form v-else class="mt-4 grid gap-4" novalidate @submit.prevent="saveSettings">
+        <form v-else class="mt-5 grid gap-5" novalidate @submit.prevent="saveSettings">
           <div>
-            <div class="flex items-center justify-between">
+            <div class="flex items-end justify-between">
               <label for="st-th" class="label">Nota de corte</label>
-              <span class="font-mono text-primary" aria-hidden="true">{{ Number(draft.score_threshold).toFixed(1) }}</span>
+              <span class="num text-3xl leading-none font-bold text-primary" aria-hidden="true">{{ Number(draft.score_threshold).toFixed(1) }}</span>
             </div>
-            <input id="st-th" v-model.number="draft.score_threshold" type="range" min="0" max="10" step="0.5" class="h-11 w-full cursor-pointer accent-primary" :aria-valuetext="`${draft.score_threshold} de 10`" data-testid="settings-threshold" />
-            <p class="text-xs text-muted">Só itens com nota ≥ corte entram no digest.</p>
+            <input id="st-th" v-model.number="draft.score_threshold" type="range" min="0" max="10" step="0.5" class="h-11 w-full cursor-pointer accent-primary" :aria-valuetext="`${draft.score_threshold} de 10`" aria-describedby="st-th-h" data-testid="settings-threshold" />
+            <p id="st-th-h" class="text-xs text-muted">Só itens com nota ≥ corte entram no digest.</p>
           </div>
           <div class="grid grid-cols-2 gap-3">
             <div>
               <label for="st-max" class="label">Máx. itens</label>
-              <input id="st-max" v-model.number="draft.digest_max_items" type="number" min="1" max="200" class="field" data-testid="settings-max" />
+              <input id="st-max" v-model.number="draft.digest_max_items" type="number" min="1" max="200" class="field num" data-testid="settings-max" />
             </div>
             <div>
               <label for="st-per" class="label">Por fonte</label>
-              <input id="st-per" v-model.number="draft.digest_per_source" type="number" min="0" max="200" class="field" aria-describedby="st-per-h" data-testid="settings-per-source" />
+              <input id="st-per" v-model.number="draft.digest_per_source" type="number" min="0" max="200" class="field num" aria-describedby="st-per-h" data-testid="settings-per-source" />
             </div>
           </div>
-          <p id="st-per-h" class="-mt-2 text-xs text-muted">Por fonte = 0 desliga a cota.</p>
+          <p id="st-per-h" class="-mt-3 text-xs text-muted">Por fonte = 0 desliga a cota.</p>
           <div>
             <label for="st-cron" class="label">Cron do digest</label>
             <input id="st-cron" v-model="draft.digest_cron" class="field font-mono" placeholder="0 7 * * *" aria-describedby="st-cron-h" data-testid="settings-cron" />
@@ -277,9 +277,9 @@ onMounted(() => {
             <label for="st-tz" class="label">Fuso horário</label>
             <input id="st-tz" v-model="draft.timezone" class="field" placeholder="America/Sao_Paulo" data-testid="settings-timezone" />
           </div>
-          <p v-if="saveError" class="rounded-lg bg-danger/10 p-3 text-sm break-words text-danger" role="alert" data-testid="settings-error">{{ saveError }}</p>
+          <p v-if="saveError" class="rounded-md bg-danger/10 p-3 text-sm break-words text-danger" role="alert" data-testid="settings-error">{{ saveError }}</p>
           <button type="submit" class="btn-primary w-full" :disabled="saving" data-testid="settings-save">{{ saving ? 'Salvando…' : 'Salvar configurações' }}</button>
-          <p v-if="settings?.updated_at" class="text-center text-xs text-muted">Atualizado {{ fmtDateTime(settings.updated_at) }}</p>
+          <p v-if="settings?.updated_at" class="num text-center text-xs text-muted">atualizado {{ fmtDateTime(settings.updated_at) }}</p>
         </form>
       </section>
     </div>

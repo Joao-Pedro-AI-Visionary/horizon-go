@@ -71,6 +71,9 @@ const barX = (i: number, j: number) => {
   return groupX(i) + (groupW.value - total) / 2 + j * (barW.value + 2)
 }
 
+// Re-key bars when the data changes so the grow-in replays.
+const sig = computed(() => props.series.map((s) => s.values.join(',')).join('|'))
+
 const active = ref<number | null>(null)
 const tip = computed(() => {
   if (active.value === null) return null
@@ -95,9 +98,9 @@ const tip = computed(() => {
             <line :x1="pad.left" :x2="width - pad.right" :y1="y(t)" :y2="y(t)" stroke="#2a2a2a" :stroke-dasharray="t === 0 ? undefined : '2 4'" />
             <text :x="pad.left - 8" :y="y(t) + 4" text-anchor="end" class="fill-muted font-mono text-[10px]">{{ fmt(t) }}</text>
           </g>
-          <template v-for="(l, i) in labels" :key="l">
+          <template v-for="(l, i) in labels" :key="`${l}-${sig}`">
             <rect v-if="active === i" :x="groupX(i)" :y="pad.top" :width="groupW" :height="plotH" fill="#ffffff" fill-opacity="0.05" />
-            <path v-for="(s, j) in series" :key="s.name" :d="barPath(barX(i, j), s.values[i] ?? 0)" :fill="s.color" />
+            <path v-for="(s, j) in series" :key="s.name" :d="barPath(barX(i, j), s.values[i] ?? 0)" :fill="s.color" class="bar-grow" :style="{ '--d': `${Math.min(i, 30) * 22 + j * 60}ms` }" />
             <text v-if="(labels.length - 1 - i) % labelEvery === 0" :x="groupX(i) + groupW / 2" :y="H - 8" text-anchor="middle" class="fill-muted font-mono text-[10px]">{{ l }}</text>
           </template>
         </g>
@@ -119,7 +122,7 @@ const tip = computed(() => {
       </svg>
       <div
         v-if="tip"
-        class="pointer-events-none absolute top-0 z-10 -translate-x-1/2 rounded-lg border border-line bg-ink/95 px-3 py-2 text-xs shadow-xl"
+        class="pointer-events-none absolute top-0 z-10 -translate-x-1/2 rounded-md border border-line bg-ink/95 px-3 py-2 text-xs shadow-xl"
         :style="{ left: `${tip.left}px` }"
         role="presentation"
       >
@@ -131,7 +134,7 @@ const tip = computed(() => {
       </div>
     </div>
     <details class="mt-2 text-xs text-muted">
-      <summary class="inline-flex min-h-8 cursor-pointer items-center hover:text-white" data-testid="chart-table-toggle">Ver tabela</summary>
+      <summary class="inline-flex min-h-11 cursor-pointer items-center font-mono tracking-wider uppercase hover:text-white" data-testid="chart-table-toggle">Ver tabela</summary>
       <div class="mt-2 max-h-56 overflow-auto">
         <table class="w-full text-left">
           <thead>

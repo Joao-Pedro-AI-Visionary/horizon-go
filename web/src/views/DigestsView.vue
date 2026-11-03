@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api, errorMessage } from '../api/client'
 import type { Digest } from '../api/types'
 import AppIcon from '../components/AppIcon.vue'
+import PageHeader from '../components/PageHeader.vue'
 import StatePanel from '../components/StatePanel.vue'
 import { fmtDateTime, fmtDay } from '../lib/format'
 import { useToasts } from '../stores/toast'
@@ -58,62 +59,68 @@ async function generate() {
 </script>
 
 <template>
-  <div class="mx-auto max-w-7xl">
-    <header class="flex flex-wrap items-end justify-between gap-4">
-      <div>
-        <p class="eyebrow">Radar · digests</p>
-        <h1 class="mt-1 font-display text-3xl font-bold md:text-4xl">Digest diário</h1>
-        <p class="mt-1 text-sm text-muted">Os melhores itens de cada dia, acima da nota de corte, em HTML e Markdown.</p>
-      </div>
-      <button type="button" class="btn-primary" :disabled="generating" :aria-busy="generating" data-testid="generate-digest" @click="generate">
-        <AppIcon :name="generating ? 'refresh' : 'plus'" :size="16" :class="generating ? 'animate-spin' : ''" />
-        {{ generating ? 'Gerando…' : 'Gerar agora' }}
-      </button>
-    </header>
+  <div>
+    <PageHeader index="02" section="Digests" title="Digest diário" :muted="1" lead="Os melhores itens de cada dia, acima da nota de corte, em HTML e Markdown.">
+      <template #meta><span class="num">{{ digests.length }}</span> {{ digests.length === 1 ? 'edição' : 'edições' }}</template>
+      <template #actions>
+        <button type="button" class="btn-primary" :disabled="generating" :aria-busy="generating" data-testid="generate-digest" @click="generate">
+          <AppIcon :name="generating ? 'refresh' : 'plus'" :size="16" :class="generating ? 'animate-spin' : ''" />
+          {{ generating ? 'Gerando…' : 'Gerar agora' }}
+        </button>
+      </template>
+    </PageHeader>
 
-    <div v-if="loading && digests.length === 0" class="mt-5 grid gap-4 lg:grid-cols-[320px_1fr]" data-testid="digests-loading">
-      <div class="card space-y-3 p-4">
-        <div v-for="i in 4" :key="i" class="skeleton h-16" />
+    <div v-if="loading && digests.length === 0" class="mt-8 grid gap-8 lg:grid-cols-12" data-testid="digests-loading" aria-hidden="true">
+      <div class="space-y-3 lg:col-span-4">
+        <div v-for="i in 4" :key="i" class="skeleton h-20" />
       </div>
-      <div class="card skeleton h-96" />
+      <div class="skeleton h-96 lg:col-span-8" />
     </div>
-    <StatePanel v-else-if="error" class="mt-5" kind="error" title="Não foi possível carregar os digests" :detail="error" @retry="load" />
+    <StatePanel v-else-if="error" class="mt-8" kind="error" title="Não foi possível carregar os digests" :detail="error" @retry="load" />
     <StatePanel
       v-else-if="digests.length === 0"
-      class="mt-5"
+      class="mt-8"
       kind="empty"
       title="Nenhum digest ainda"
       detail="O cron do worker gera um por dia; use “Gerar agora” para criar o de hoje com os itens já pontuados."
       testid="digests-empty"
     />
 
-    <div v-else class="mt-5 grid gap-4 lg:grid-cols-[320px_1fr]">
-      <nav class="card h-fit p-2 lg:sticky lg:top-8" aria-label="Digests por data">
-        <ul class="flex gap-2 overflow-x-auto p-1 lg:max-h-[calc(100dvh-12rem)] lg:flex-col lg:overflow-y-auto" data-testid="digest-list">
-          <li v-for="d in digests" :key="d.id" class="shrink-0">
+    <div v-else class="mt-8 grid gap-8 lg:grid-cols-12">
+      <!-- Issue index -->
+      <nav class="min-w-0 lg:sticky lg:top-24 lg:col-span-4 lg:h-fit" aria-label="Digests por data">
+        <p class="eyebrow mb-3">Edições</p>
+        <ul class="-mx-1 flex gap-2 overflow-x-auto px-1 pb-2 lg:mx-0 lg:block lg:max-h-[calc(100dvh-12rem)] lg:overflow-y-auto lg:px-0 lg:pb-0" data-testid="digest-list">
+          <li v-for="(d, i) in digests" :key="d.id" class="shrink-0 lg:border-t lg:border-line" v-reveal="i">
             <button
               type="button"
-              class="w-full min-w-44 cursor-pointer rounded-xl px-4 py-3 text-left transition-colors duration-200"
-              :class="d.date === selectedDate ? 'bg-primary text-ink' : 'hover:bg-raised'"
+              class="group relative w-full min-w-52 cursor-pointer rounded-md border border-line px-4 py-3 text-left transition-colors duration-200 lg:rounded-none lg:border-0 lg:py-4 lg:pl-5"
+              :class="d.date === selectedDate ? 'bg-surface text-white' : 'text-white/80 hover:bg-white/[0.03] hover:text-white'"
               :aria-current="d.date === selectedDate ? 'true' : undefined"
               data-testid="digest-item"
               @click="open(d.date)"
             >
-              <span class="block font-display font-semibold">{{ fmtDay(d.date) }}</span>
-              <span class="block font-mono text-xs" :class="d.date === selectedDate ? 'text-ink/75' : 'text-muted'">
-                {{ d.item_count }} itens · {{ d.considered }} considerados
-              </span>
+              <span
+                class="absolute top-0 bottom-0 left-0 w-0.5 origin-top bg-primary transition-transform duration-300 max-lg:inset-x-0 max-lg:top-auto max-lg:h-0.5 max-lg:w-auto max-lg:origin-left"
+                :class="d.date === selectedDate ? 'scale-100' : 'max-lg:scale-x-0 lg:scale-y-0'"
+                aria-hidden="true"
+              />
+              <span class="num block text-xs text-muted">Nº {{ String(digests.length - i).padStart(2, '0') }}</span>
+              <span class="mt-0.5 block font-display text-lg font-semibold tracking-tight" :class="d.date === selectedDate ? 'text-primary' : ''">{{ fmtDay(d.date) }}</span>
+              <span class="num block text-xs text-muted">{{ d.item_count }} itens · {{ d.considered }} considerados</span>
             </button>
           </li>
         </ul>
       </nav>
 
-      <section class="card min-w-0 overflow-hidden" aria-labelledby="digest-title" data-testid="digest-reader">
+      <!-- Reader -->
+      <section class="min-w-0 lg:col-span-8" aria-labelledby="digest-title" data-testid="digest-reader">
         <template v-if="selected">
-          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line p-4">
+          <div class="flex flex-wrap items-end justify-between gap-4 border-b border-line pb-4">
             <div class="min-w-0">
-              <h2 id="digest-title" class="font-display text-lg font-semibold break-words">{{ selected.title }}</h2>
-              <p class="text-xs text-muted">Atualizado {{ fmtDateTime(selected.updated_at) }} · {{ selected.language }}</p>
+              <p class="eyebrow">Edição de {{ fmtDay(selected.date) }}</p>
+              <h2 id="digest-title" class="mt-1 font-display text-2xl font-bold tracking-tight break-words">{{ selected.title }}</h2>
+              <p class="num mt-1 text-xs text-muted">atualizado {{ fmtDateTime(selected.updated_at) }} · {{ selected.language }}</p>
             </div>
             <div class="flex gap-2">
               <a :href="api.digestHtmlUrl(selected.date)" target="_blank" rel="noopener" class="btn-ghost" data-testid="digest-open-html">
@@ -124,19 +131,31 @@ async function generate() {
               </a>
             </div>
           </div>
-          <div class="relative bg-ink">
-            <div v-if="frameLoading" class="absolute inset-0 space-y-3 p-6" aria-hidden="true">
-              <div class="skeleton h-8 w-1/2" />
-              <div class="skeleton h-4 w-full" />
-              <div class="skeleton h-4 w-4/5" />
+          <dl class="grid grid-cols-2 border-b border-line">
+            <div class="py-4 pr-3">
+              <dt class="eyebrow">Itens no digest</dt>
+              <dd class="num mt-1 text-3xl font-bold text-primary">{{ selected.item_count }}</dd>
             </div>
+            <div class="border-l border-line py-4 pl-4">
+              <dt class="eyebrow">Considerados</dt>
+              <dd class="num mt-1 text-3xl font-bold">{{ selected.considered }}</dd>
+            </div>
+          </dl>
+          <div class="relative mt-6 overflow-hidden rounded-[10px] border border-line bg-ink">
+            <Transition name="drop">
+              <div v-if="frameLoading" class="absolute inset-0 z-10 space-y-3 bg-ink p-6" aria-hidden="true">
+                <div class="skeleton h-8 w-1/2" />
+                <div class="skeleton h-4 w-full" />
+                <div class="skeleton h-4 w-4/5" />
+              </div>
+            </Transition>
             <!-- Server HTML is rendered sandboxed (no scripts) under the API's CSP. -->
             <iframe
               :key="`${selected.date}-${frameKey}`"
               :src="`${api.digestHtmlUrl(selected.date)}&v=${frameKey}`"
               :title="`Digest ${selected.title}`"
               sandbox="allow-popups allow-popups-to-escape-sandbox"
-              class="block h-[70dvh] w-full"
+              class="block h-[72dvh] w-full"
               data-testid="digest-frame"
               @load="frameLoading = false"
             />
