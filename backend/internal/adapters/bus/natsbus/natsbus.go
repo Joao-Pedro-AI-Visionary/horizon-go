@@ -196,3 +196,95 @@ func (p *Persister) Run(ctx context.Context) error {
 	cc.Stop()
 	return nil
 }
+
+// ScoredSubject carries items that got a score and an embedding.
+func (b *Bus) ScoredSubject() string { return b.prefix + ".scored" }
+
+// DedupedSubject carries items that were placed in a cluster.
+func (b *Bus) DedupedSubject() string { return b.prefix + ".deduped" }
+
+// ItemEvent is the payload of items.scored and items.deduped.
+type ItemEvent struct {
+	ItemID    int64 `json:"item_id"`
+	ClusterID int64 `json:"cluster_id,omitempty"`
+	PrimaryID int64 `json:"primary_id,omitempty"`
+}
+
+func (b *Bus) publishEvent(ctx context.Context, subject, msgID string, ev ItemEvent) error {
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	if _, err := b.js.Publish(ctx, subject, data, jetstream.WithMsgID(msgID)); err != nil {
+		return fmt.Errorf("publish %s: %w", subject, err)
+	}
+	return nil
+}
+
+// PublishScored announces that an item was scored.
+func (b *Bus) PublishScored(ctx context.Context, itemID int64) error {
+	return b.publishEvent(ctx, b.ScoredSubject(), fmt.Sprintf("scored:%d", itemID), ItemEvent{ItemID: itemID})
+}
+
+// PublishDeduped announces that an item joined a cluster.
+func (b *Bus) PublishDeduped(ctx context.Context, ev ItemEvent) error {
+	return b.publishEvent(ctx, b.DedupedSubject(), fmt.Sprintf("deduped:%d:%d", ev.ItemID, ev.ClusterID), ev)
+}
+
+// Consumer creates or updates a durable pull consumer on subject. ackWait
+// must cover the slowest handler (a cold model load takes about a minute).
+func (b *Bus) Consumer(ctx context.Context, durable, subject string, ackWait time.Duration) (jetstream.Consumer, error) {
+	cons, err := b.js.CreateOrUpdateConsumer(ctx, b.stream, jetstream.ConsumerConfig{
+		Durable:       durable,
+		FilterSubject: subject,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+		MaxDeliver:    maxDeliver,
+		AckWait:       ackWait,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("nats consumer %s: %w", durable, err)
+	}
+	return cons, nil
+}
+
+// MaxDeliver is the redelivery limit of every consumer.
+const MaxDeliver = maxDeliver
+
+// Drain fetches up to batchSize messages at a time from cons and hands them
+// to handle until nothing is pending or in flight. handle must ack, nak or
+// term each message; a small batch keeps slow handlers within the ack wait.
+func Drain(ctx context.Context, cons jetstream.Consumer, batchSize int, handle func(jetstream.Msg)) (int, error) {
+	if batchSize <= 0 {
+		batchSize = fetchBatch
+	}
+	seen := 0
+	for {
+		batch, err := cons.Fetch(batchSize, jetstream.FetchMaxWait(fetchWait))
+		if err != nil {
+			return seen, err
+		}
+		n := 0
+		for msg := range batch.Messages() {
+			n++
+			handle(msg)
+		}
+		seen += n
+		if err := batch.Error(); err != nil && !errors.Is(err, nats.ErrTimeout) {
+			return seen, err
+		}
+		if n > 0 {
+			continue
+		}
+		info, err := cons.Info(ctx)
+		if err != nil {
+			return seen, err
+		}
+		if info.NumPending == 0 && info.NumAckPending == 0 {
+			return seen, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return seen, err
+		}
+	}
+}
