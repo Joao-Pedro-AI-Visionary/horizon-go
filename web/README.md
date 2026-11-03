@@ -11,7 +11,9 @@ npm run e2e        # Playwright em desktop 1440x900, tablet 834x1112, mobile 390
 E2E_BASE_URL=http://localhost:5173 npx playwright test   # contra um Vite já rodando
 ```
 
-O e2e exige a API, o worker, o Postgres e o NATS no ar. Os testes que alteram dados
+O e2e exige a API, o worker, o Postgres, o NATS e o Ollama no ar; `..\scripts\e2e.ps1` compila e sobe
+API e worker, roda a suíte, gera `videos/e2e-<project>.mp4` (`scripts/videos.mjs`, FFmpeg) e encerra
+os dois pelo PID. Com `-Demo` também grava o tour `demo/tour.spec.ts` em `videos/demo-final.mp4`. Os testes que alteram dados
 apagam a fonte que criam e restauram as configurações no final. Os screenshots de cada
 tela ficam em `docs/screenshots/<tela>-<viewport>.png`.
 
