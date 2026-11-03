@@ -28,6 +28,7 @@ import (
 type Store interface {
 	Ping(ctx context.Context) error
 	Feed(ctx context.Context, q domain.FeedQuery) (domain.FeedPage, error)
+	FeedTimeline(ctx context.Context, q domain.FeedQuery, days int) (domain.FeedTimeline, error)
 	Item(ctx context.Context, id int64) (domain.ItemDetail, error)
 	ListDigests(ctx context.Context, limit int) ([]domain.Digest, error)
 	GetDigest(ctx context.Context, date, language string) (domain.Digest, error)
@@ -93,6 +94,7 @@ func (s *Server) Handler() http.Handler {
 			})
 		})
 		r.Get("/feed", s.feed)
+		r.Get("/feed/timeline", s.feedTimeline)
 		r.Get("/items/{id}", s.item)
 		r.Get("/digests", s.listDigests)
 		r.Post("/digests/generate", s.generateDigest)

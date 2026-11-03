@@ -304,6 +304,65 @@ func TestAPIAgainstPostgresAndNATS(t *testing.T) {
 	expect("/api/feed?sort=recent", 3, "C", "A", "D")
 	expect("/api/feed?page=2&page_size=1", 3, "D")
 	expect("/api/feed?q=%25", 0)
+	// --- GET /api/feed/timeline (date scrubber histogram) ---
+	loc, _ := time.LoadLocation("America/Sao_Paulo")
+	dayOf := func(k string) string {
+		for _, s := range seeds {
+			if s.key == k {
+				return now.Add(-s.ago).In(loc).Format(time.DateOnly)
+			}
+		}
+		t.Fatalf("no seed %s", k)
+		return ""
+	}
+	timeline := func(path string) map[string]int {
+		t.Helper()
+		var tl domain.FeedTimeline
+		e.call("GET", path, "", 200, &tl)
+		got := map[string]int{}
+		sum := 0
+		for i, b := range tl.Buckets {
+			if b.Count > 0 {
+				got[b.Day] = b.Count
+			}
+			sum += b.Count
+			if i > 0 && !b.Start.After(tl.Buckets[i-1].Start) {
+				t.Fatalf("%s: buckets out of order: %+v", path, tl.Buckets)
+			}
+		}
+		if len(tl.Buckets) != tl.Days || sum != tl.Total || tl.Timezone != "America/Sao_Paulo" ||
+			!tl.Buckets[0].Start.Equal(tl.From) || !tl.To.After(now) {
+			t.Fatalf("%s: shape: %+v", path, tl)
+		}
+		return got
+	}
+	wantDays := func(keys ...string) map[string]int {
+		m := map[string]int{}
+		for _, k := range keys {
+			m[dayOf(k)]++
+		}
+		return m
+	}
+	for path, want := range map[string]map[string]int{
+		"/api/feed/timeline?days=7":                   wantDays("A", "C", "D"),
+		"/api/feed/timeline?days=7&min_score=6":       wantDays("A", "D"),
+		"/api/feed/timeline?days=7&tag=go&period=24h": wantDays("A", "D"), // time filters are ignored
+		"/api/feed/timeline?days=7&q=postgres":        wantDays("C"),
+	} {
+		if got := timeline(path); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("%s: got %v want %v", path, got, want)
+		}
+	}
+	// The range picked on the scrubber, sent back as from/to, returns the
+	// same rows the histogram counted.
+	var tl domain.FeedTimeline
+	e.call("GET", "/api/feed/timeline?days=2", "", 200, &tl)
+	var ranged domain.FeedPage
+	e.call("GET", "/api/feed?from="+url.QueryEscape(tl.From.Format(time.RFC3339))+"&to="+url.QueryEscape(tl.To.Format(time.RFC3339)), "", 200, &ranged)
+	if ranged.Total != tl.Total {
+		t.Fatalf("feed in timeline range: %d rows, histogram says %d", ranged.Total, tl.Total)
+	}
+
 	var first domain.FeedPage
 	e.call("GET", "/api/feed?page_size=1", "", 200, &first)
 	if it := first.Items[0]; it.DuplicateCount != 1 || it.ScoreReason != "why A" || it.SourceName != "Hacker News" || it.ClusterID == nil {

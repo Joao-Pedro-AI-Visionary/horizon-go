@@ -133,6 +133,32 @@ func (s *Server) feed(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, page)
 }
 
+// feedTimeline is the per-day histogram of the feed for the date scrubber.
+// It takes the same filters as /api/feed except the time window (period,
+// from, to), which is what the scrubber selects.
+func (s *Server) feedTimeline(w http.ResponseWriter, r *http.Request) {
+	v := r.URL.Query()
+	days, err := intParam(v, "days", domain.DefaultTimelineDays, 1, domain.MaxTimelineDays)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	for _, k := range []string{"period", "from", "to", "page", "page_size", "sort"} {
+		v.Del(k)
+	}
+	q, err := parseFeedQuery(v, time.Now())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	tl, err := s.Store.FeedTimeline(r.Context(), q, days)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tl)
+}
+
 func pathID(r *http.Request) (int64, error) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil || id <= 0 {

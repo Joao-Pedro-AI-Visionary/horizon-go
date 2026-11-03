@@ -172,3 +172,40 @@ type TokenUsage struct {
 	PromptTokens     int
 	CompletionTokens int
 }
+
+// TimelineBucket counts the feed rows whose event time falls on one calendar
+// day (in the settings timezone).
+type TimelineBucket struct {
+	Day   string    `json:"day"`   // YYYY-MM-DD
+	Start time.Time `json:"start"` // first instant of the day
+	Count int       `json:"count"`
+}
+
+// FeedTimeline is the per-day histogram of the feed over the last Days days
+// (today included). It drives the date scrubber of the dashboard: a range
+// [Buckets[i].Start, Buckets[j+1].Start or To) is sent back as from/to.
+type FeedTimeline struct {
+	Days     int              `json:"days"`
+	Timezone string           `json:"timezone"`
+	From     time.Time        `json:"from"`
+	To       time.Time        `json:"to"` // exclusive: start of tomorrow
+	Total    int              `json:"total"`
+	Buckets  []TimelineBucket `json:"buckets"`
+}
+
+// Timeline bounds (days).
+const (
+	DefaultTimelineDays = 30
+	MaxTimelineDays     = 90
+)
+
+// DayStarts returns the start of each of the last `days` calendar days in loc
+// (oldest first, today last) and the start of tomorrow.
+func DayStarts(now time.Time, loc *time.Location, days int) ([]time.Time, time.Time) {
+	y, m, d := now.In(loc).Date()
+	starts := make([]time.Time, days)
+	for i := range days {
+		starts[i] = time.Date(y, m, d-(days-1-i), 0, 0, 0, 0, loc)
+	}
+	return starts, time.Date(y, m, d+1, 0, 0, 0, 0, loc)
+}

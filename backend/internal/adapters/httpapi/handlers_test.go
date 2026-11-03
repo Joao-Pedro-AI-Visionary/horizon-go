@@ -23,6 +23,7 @@ import (
 
 type fakeStore struct {
 	lastQuery domain.FeedQuery
+	lastDays  int
 	settings  domain.Settings
 	feedErr   error
 	pingErr   error
@@ -32,6 +33,10 @@ func (f *fakeStore) Ping(context.Context) error { return f.pingErr }
 func (f *fakeStore) Feed(_ context.Context, q domain.FeedQuery) (domain.FeedPage, error) {
 	f.lastQuery = q
 	return domain.FeedPage{Items: []domain.FeedItem{}, Page: q.Page, PageSize: q.PageSize}, f.feedErr
+}
+func (f *fakeStore) FeedTimeline(_ context.Context, q domain.FeedQuery, days int) (domain.FeedTimeline, error) {
+	f.lastQuery, f.lastDays = q, days
+	return domain.FeedTimeline{Days: days, Buckets: []domain.TimelineBucket{}}, f.feedErr
 }
 func (f *fakeStore) Item(_ context.Context, id int64) (domain.ItemDetail, error) {
 	if id == 1 {
@@ -202,6 +207,10 @@ func TestStatusMapping(t *testing.T) {
 		{"PUT", "/api/settings", `{"score_threshold":6,"digest_max_items":5,"digest_per_source":1,"digest_cron":"nope"}`, 400, "bad cron"},
 		{"PUT", "/api/settings", `{"score_threshold":6,"digest_max_items":5,"digest_per_source":1,"digest_cron":"0 7 * * *","timezone":"Mars/Base"}`, 400, "timezone"},
 		{"PUT", "/api/settings", `{"score_threshold":7,"digest_max_items":5,"digest_per_source":1,"digest_cron":"0 8 * * *"}`, 200, `"timezone":"America/Sao_Paulo"`},
+		{"GET", "/api/feed/timeline?days=0", "", 400, "days"},
+		{"GET", "/api/feed/timeline?days=91", "", 400, "days"},
+		{"GET", "/api/feed/timeline?min_score=11", "", 400, "min_score"},
+		{"GET", "/api/feed/timeline", "", 200, `"days":30`},
 		{"GET", "/api/metrics?days=0", "", 400, "days"},
 		{"GET", "/api/metrics?days=7", "", 200, `"days":7`},
 		{"GET", "/api/nope", "", 404, "not found"},
@@ -223,6 +232,18 @@ func TestStatusMapping(t *testing.T) {
 	fs.pingErr = errors.New("down")
 	if resp, body := do(t, "GET", srv.URL+"/healthz", ""); resp.StatusCode != 503 || !strings.Contains(body, `"status":"degraded"`) {
 		t.Errorf("healthz degraded: %d %s", resp.StatusCode, body)
+	}
+}
+
+func TestTimelineIgnoresTimeFilters(t *testing.T) {
+	_, fs, srv := newTestServer(t)
+	resp, body := do(t, "GET", srv.URL+"/api/feed/timeline?days=14&source_id=2&tag=go&min_score=6&q=go&period=24h&from=2026-11-01&to=2026-11-02", "")
+	if resp.StatusCode != 200 || !strings.Contains(body, `"days":14`) {
+		t.Fatalf("timeline: %d %s", resp.StatusCode, body)
+	}
+	q := fs.lastQuery
+	if fs.lastDays != 14 || q.SourceID != 2 || q.Tag != "go" || *q.MinScore != 6 || q.Q != "go" || !q.From.IsZero() || !q.To.IsZero() {
+		t.Fatalf("query passed to the store: days=%d %+v", fs.lastDays, q)
 	}
 }
 

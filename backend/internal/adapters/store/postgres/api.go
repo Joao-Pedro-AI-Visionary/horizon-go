@@ -30,8 +30,9 @@ func scanFeed(row pgx.CollectableRow) (domain.FeedItem, error) {
 	return f, err
 }
 
-// Feed pages through the feed_view projection (the only table it reads).
-func (r ReadRepo) Feed(ctx context.Context, q domain.FeedQuery) (domain.FeedPage, error) {
+// feedFilter builds the WHERE clause of a feed query (time window included
+// only when withTime is set). Placeholders start at $1.
+func feedFilter(q domain.FeedQuery, withTime bool) ([]string, []any) {
 	var where []string
 	var args []any
 	add := func(cond string, v any) {
@@ -54,12 +55,18 @@ func (r ReadRepo) Feed(ctx context.Context, q domain.FeedQuery) (domain.FeedPage
 		like := "%" + strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(q.Q) + "%"
 		add("(title ILIKE $%[1]d OR summary ILIKE $%[1]d)", like)
 	}
-	if !q.From.IsZero() {
+	if withTime && !q.From.IsZero() {
 		add("COALESCE(published_at, projected_at) >= $%d", q.From)
 	}
-	if !q.To.IsZero() {
+	if withTime && !q.To.IsZero() {
 		add("COALESCE(published_at, projected_at) < $%d", q.To)
 	}
+	return where, args
+}
+
+// Feed pages through the feed_view projection (the only table it reads).
+func (r ReadRepo) Feed(ctx context.Context, q domain.FeedQuery) (domain.FeedPage, error) {
+	where, args := feedFilter(q, true)
 	cond := ""
 	if len(where) > 0 {
 		cond = " WHERE " + strings.Join(where, " AND ")
@@ -86,6 +93,52 @@ func (r ReadRepo) Feed(ctx context.Context, q domain.FeedQuery) (domain.FeedPage
 		page.Items = items
 	}
 	return page, nil
+}
+
+// FeedTimeline counts the feed rows per calendar day (settings timezone) over
+// the last `days` days, with the non-time filters of q.
+func (r ReadRepo) FeedTimeline(ctx context.Context, q domain.FeedQuery, days int) (domain.FeedTimeline, error) {
+	st, err := r.GetSettings(ctx)
+	if err != nil {
+		return domain.FeedTimeline{}, err
+	}
+	loc, err := time.LoadLocation(st.Timezone)
+	if err != nil {
+		return domain.FeedTimeline{}, err
+	}
+	starts, end := domain.DayStarts(time.Now(), loc, days)
+	where, args := feedFilter(q, false)
+	args = append(args, starts[0], end, st.Timezone)
+	n := len(args)
+	where = append(where,
+		fmt.Sprintf("COALESCE(published_at, projected_at) >= $%d", n-2),
+		fmt.Sprintf("COALESCE(published_at, projected_at) < $%d", n-1))
+	rows, err := r.DB.Query(ctx, fmt.Sprintf(`
+SELECT to_char((COALESCE(published_at, projected_at) AT TIME ZONE $%d)::date, 'YYYY-MM-DD'), count(*)::int
+FROM feed_view WHERE %s GROUP BY 1`, n, strings.Join(where, " AND ")), args...)
+	if err != nil {
+		return domain.FeedTimeline{}, err
+	}
+	counts := map[string]int{}
+	for rows.Next() {
+		var day string
+		var c int
+		if err := rows.Scan(&day, &c); err != nil {
+			rows.Close()
+			return domain.FeedTimeline{}, err
+		}
+		counts[day] = c
+	}
+	if err := rows.Err(); err != nil {
+		return domain.FeedTimeline{}, err
+	}
+	tl := domain.FeedTimeline{Days: days, Timezone: st.Timezone, From: starts[0], To: end, Buckets: make([]domain.TimelineBucket, days)}
+	for i, s := range starts {
+		day := s.Format(time.DateOnly)
+		tl.Buckets[i] = domain.TimelineBucket{Day: day, Start: s, Count: counts[day]}
+		tl.Total += counts[day]
+	}
+	return tl, nil
 }
 
 // DigestCandidates returns the feed rows whose event time is in [from, to).
