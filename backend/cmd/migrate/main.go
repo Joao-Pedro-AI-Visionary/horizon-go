@@ -10,7 +10,6 @@ import (
 	"os"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/pressly/goose/v3"
 
 	"github.com/jpdev/horizon-go/migrations"
 )
@@ -33,11 +32,7 @@ func main() {
 	}
 	defer db.Close()
 
-	goose.SetBaseFS(migrations.FS)
-	if err := goose.SetDialect("postgres"); err != nil {
-		log.Fatalf("dialect: %v", err)
-	}
-	if err := goose.Run(cmd, db, "."); err != nil {
+	if err := migrations.Run(db, cmd); err != nil {
 		log.Fatalf("goose %s: %v", cmd, err)
 	}
 }
