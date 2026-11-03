@@ -3,14 +3,16 @@
 @import '@fontsource-variable/jetbrains-mono';
 @import 'tailwindcss';
 
-/* JpDev design tokens (see CLAUDE.md). */
+/* JpDev design tokens (see CLAUDE.md and docs/DESIGN.md). */
 @theme {
   --color-ink: #0b0b0b;
   --color-surface: #141414;
   --color-raised: #1c1c1c;
   --color-line: #2a2a2a;
-  --color-muted: #a3a3a3; /* 7.3:1 on #141414 */
+  --color-rule: #ffffff0f; /* grid hairlines, decorative only */
+  --color-muted: #a3a3a3; /* 7.9:1 on #0b0b0b, 7.3:1 on #141414 */
   --color-primary: #ffd400;
+  --color-primary-hover: #ffe14d;
   --color-accent: #ff7a00;
   --color-danger: #ff6b6b; /* 5.9:1 on #141414 */
   --color-ok: #4ade80;
@@ -19,6 +21,18 @@
   --font-display: 'Space Grotesk Variable', ui-sans-serif, system-ui, sans-serif;
   --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
+
+  /* Motion tokens. */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-quart: cubic-bezier(0.5, 0, 0.75, 0);
+}
+
+:root {
+  --dur-micro: 150ms;
+  --dur-base: 220ms;
+  --dur-enter: 420ms;
+  --dur-reveal: 640ms;
+  --stagger: 55ms;
 }
 
 html,
@@ -27,58 +41,273 @@ body,
   min-height: 100%;
 }
 
+html {
+  scrollbar-color: #3a3a3a transparent;
+}
+
 body {
   @apply bg-ink font-sans text-white antialiased;
   font-size: 16px;
   line-height: 1.5;
 }
 
+::selection {
+  background: var(--color-primary);
+  color: var(--color-ink);
+}
+
 /* Visible focus on every control (keyboard only). */
 :focus-visible {
   outline: 2px solid var(--color-primary);
   outline-offset: 2px;
-  border-radius: 6px;
+  border-radius: 4px;
 }
 
+/* ---------- Layout ---------- */
+@utility container-ed {
+  @apply mx-auto w-full max-w-[1360px] px-4 md:px-8;
+}
+
+/* Editorial column rules behind the content (4 / 6 / 12 columns). */
+.grid-rules {
+  @apply pointer-events-none fixed inset-0 z-0;
+}
+.grid-rules > div {
+  @apply container-ed h-full;
+}
+.grid-rules > div > div {
+  height: 100%;
+  border-right: 1px solid var(--color-rule);
+  background-image: linear-gradient(to right, var(--color-rule) 1px, transparent 1px);
+  background-size: calc(100% / 4) 100%;
+}
+@media (min-width: 768px) {
+  .grid-rules > div > div {
+    background-size: calc(100% / 6) 100%;
+  }
+}
+@media (min-width: 1280px) {
+  .grid-rules > div > div {
+    background-size: calc(100% / 12) 100%;
+  }
+}
+
+/* ---------- Type ---------- */
+@utility display-xl {
+  @apply font-display font-bold uppercase;
+  font-size: clamp(2.6rem, 7.2vw, 6.5rem);
+  line-height: 0.9;
+  letter-spacing: -0.035em;
+}
+@utility display-lg {
+  @apply font-display font-bold;
+  font-size: clamp(1.9rem, 4.2vw, 3.75rem);
+  line-height: 1.02;
+  letter-spacing: -0.025em;
+}
+@utility eyebrow {
+  @apply font-mono text-xs tracking-[0.14em] text-muted uppercase;
+}
+@utility num {
+  @apply font-mono tabular-nums;
+  letter-spacing: -0.04em;
+}
+
+/* ---------- Surfaces & controls ---------- */
 @utility card {
-  @apply rounded-2xl border border-line bg-surface;
+  @apply rounded-[10px] border border-line bg-surface;
 }
 @utility btn {
-  @apply inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-50;
+  @apply inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-md px-4 font-display text-sm font-semibold tracking-tight select-none disabled:cursor-not-allowed disabled:opacity-50;
+  transition:
+    background-color var(--dur-micro) ease,
+    border-color var(--dur-micro) ease,
+    color var(--dur-micro) ease,
+    transform var(--dur-micro) var(--ease-out-expo);
+  &:not(:disabled):active {
+    transform: scale(0.97);
+  }
 }
 @utility btn-primary {
-  @apply btn bg-primary text-ink hover:bg-[#ffe14d];
+  @apply btn bg-primary text-ink hover:bg-primary-hover;
 }
 @utility btn-ghost {
-  @apply btn border border-line bg-raised text-white hover:border-white/30;
+  @apply btn border border-line bg-surface text-white hover:border-white/40;
 }
 @utility btn-danger {
   @apply btn border border-danger/40 bg-danger/10 text-danger hover:bg-danger/20;
 }
 @utility btn-icon {
-  @apply inline-flex size-11 cursor-pointer items-center justify-center rounded-xl border border-line bg-raised text-white transition-colors duration-200 hover:border-white/30 disabled:cursor-not-allowed disabled:opacity-50;
+  @apply inline-flex size-11 cursor-pointer items-center justify-center rounded-md border border-line bg-surface text-white hover:border-white/40 disabled:cursor-not-allowed disabled:opacity-50;
+  transition: border-color var(--dur-micro) ease;
 }
 @utility field {
-  @apply min-h-11 w-full rounded-xl border border-line bg-raised px-3 text-sm text-white placeholder:text-muted focus:border-primary;
+  @apply min-h-11 w-full rounded-md border border-line bg-surface px-3 text-sm text-white placeholder:text-muted focus:border-primary;
+  transition: border-color var(--dur-micro) ease;
 }
 @utility label {
-  @apply mb-1 block text-xs font-medium tracking-wide text-muted uppercase;
+  @apply mb-1.5 block font-mono text-[11px] font-medium tracking-[0.12em] text-muted uppercase;
 }
 @utility chip {
-  @apply inline-flex min-h-8 items-center gap-1 rounded-full border border-line bg-raised px-3 text-xs text-white/90;
+  @apply inline-flex min-h-8 items-center gap-1 rounded-full border border-line px-3 text-xs text-white/90;
+  transition:
+    border-color var(--dur-micro) ease,
+    color var(--dur-micro) ease;
 }
-@utility eyebrow {
-  @apply font-mono text-xs tracking-widest text-muted uppercase;
+/* Segmented control (period / sort / days). */
+@utility seg {
+  @apply inline-flex rounded-md border border-line bg-surface p-1;
+}
+@utility seg-btn {
+  @apply min-h-9 min-w-11 flex-auto shrink-0 cursor-pointer rounded px-3 font-mono text-xs whitespace-nowrap text-white/75 hover:text-white aria-pressed:bg-primary aria-pressed:font-semibold aria-pressed:text-ink;
+  transition:
+    background-color var(--dur-base) var(--ease-out-expo),
+    color var(--dur-micro) ease;
 }
 
+/* Arrow that nudges forward on hover/focus of its group. */
+.nudge {
+  transition: transform var(--dur-base) var(--ease-out-expo);
+}
+.group:hover .nudge,
+.group:focus-visible .nudge {
+  transform: translateX(3px);
+}
+
+/* ---------- Motion ---------- */
 @keyframes pulse-soft {
   50% {
     opacity: 0.45;
   }
 }
 .skeleton {
-  @apply rounded-lg bg-raised;
+  @apply rounded-md bg-raised;
   animation: pulse-soft 1.4s ease-in-out infinite;
+}
+
+/* Reveal on scroll (v-reveal): rise + fade, staggered by --d. */
+[data-reveal] {
+  opacity: 0;
+  transform: translateY(18px);
+  transition:
+    opacity var(--dur-reveal) var(--ease-out-expo) var(--d, 0ms),
+    transform var(--dur-reveal) var(--ease-out-expo) var(--d, 0ms);
+}
+[data-reveal].is-in {
+  opacity: 1;
+  transform: none;
+}
+
+/* Headline words rise out of a mask. */
+.word {
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: top;
+  padding-bottom: 0.06em;
+  margin-bottom: -0.06em;
+}
+.word > span {
+  display: inline-block;
+  animation: word-rise 760ms var(--ease-out-expo) both;
+  animation-delay: var(--d, 0ms);
+}
+@keyframes word-rise {
+  from {
+    transform: translateY(105%);
+  }
+}
+
+/* Route transition: quick exit, slower enter (exit faster than enter). */
+.route-enter-active {
+  transition:
+    opacity var(--dur-enter) var(--ease-out-expo),
+    transform var(--dur-enter) var(--ease-out-expo);
+}
+.route-leave-active {
+  transition: opacity 140ms var(--ease-in-quart);
+}
+.route-enter-from {
+  opacity: 0;
+  transform: translateY(14px);
+}
+.route-leave-to {
+  opacity: 0;
+}
+
+/* Expand/collapse panels (pipeline report, filters). */
+.drop-enter-active,
+.drop-leave-active {
+  transition:
+    opacity var(--dur-base) var(--ease-out-expo),
+    transform var(--dur-base) var(--ease-out-expo);
+}
+.drop-enter-from,
+.drop-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+/* Toasts slide in from the edge. */
+.toast-enter-active {
+  transition:
+    opacity var(--dur-enter) var(--ease-out-expo),
+    transform var(--dur-enter) var(--ease-out-expo);
+}
+.toast-leave-active {
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+.toast-enter-from {
+  opacity: 0;
+  transform: translateY(16px);
+}
+.toast-leave-to {
+  opacity: 0;
+  transform: translateX(24px);
+}
+
+/* Chart draw-in: bars grow from the baseline, lines trace themselves. */
+.bar-grow {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: bar-grow 700ms var(--ease-out-expo) both;
+  animation-delay: var(--d, 0ms);
+}
+@keyframes bar-grow {
+  from {
+    transform: scaleY(0);
+  }
+}
+.line-draw {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: line-draw 1100ms var(--ease-out-expo) forwards;
+  animation-delay: var(--d, 0ms);
+}
+@keyframes line-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.fade-in {
+  animation: fade-in 900ms ease both;
+  animation-delay: var(--d, 0ms);
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+.meter-fill {
+  transform-origin: 0 50%;
+  animation: meter-fill 900ms var(--ease-out-expo) both;
+  animation-delay: var(--d, 0ms);
+}
+@keyframes meter-fill {
+  from {
+    transform: scaleX(0);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -86,7 +315,14 @@ body {
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+  [data-reveal] {
+    opacity: 1;
+    transform: none;
   }
 }
