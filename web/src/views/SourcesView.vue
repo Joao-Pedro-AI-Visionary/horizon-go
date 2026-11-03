@@ -5,6 +5,7 @@ import type { CollectReport, Settings, Source } from '../api/types'
 import AppIcon from '../components/AppIcon.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import SourceForm from '../components/SourceForm.vue'
+import DisclosurePanel from '../components/DisclosurePanel.vue'
 import PageHeader from '../components/PageHeader.vue'
 import StatePanel from '../components/StatePanel.vue'
 import { fmtDateTime, fmtNumber, fmtRelative, kindLabel } from '../lib/format'
@@ -106,6 +107,18 @@ function configSummary(s: Source): string {
   return parts.join(' · ') || 'configuração padrão'
 }
 
+// Every config field of the source, for the details disclosure.
+function configEntries(s: Source): [string, string][] {
+  return Object.entries(s.config ?? {}).map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v) : String(v)])
+}
+function runDuration(s: Source): string {
+  const r = s.last_fetch
+  if (!r?.finished_at) return '—'
+  const ms = Date.parse(r.finished_at) - Date.parse(r.started_at)
+  return Number.isFinite(ms) && ms >= 0 ? (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1).replace('.', ',')} s`) : '—'
+}
+const details = reactive<Record<number, boolean>>({})
+
 const enabledCount = computed(() => sources.value.filter((s) => s.enabled).length)
 
 // --- Settings ---
@@ -175,8 +188,8 @@ onMounted(() => {
         <StatePanel v-else-if="sources.length === 0" kind="empty" title="Nenhuma fonte cadastrada" detail="Cadastre um feed RSS, um subreddit ou o Hacker News para começar a coletar." testid="sources-empty">
           <button type="button" class="btn-primary" data-testid="empty-source-new" @click="openCreate"><AppIcon name="plus" :size="16" /> Nova fonte</button>
         </StatePanel>
-        <ul v-else class="border-t border-line" data-testid="source-list">
-          <li v-for="(s, i) in sources" :key="s.id" v-reveal="i" class="border-b border-line py-6" :class="s.enabled ? '' : 'opacity-70'" data-testid="source-card">
+        <ul v-else class="grid gap-4" data-testid="source-list">
+          <li v-for="(s, i) in sources" :key="s.id" v-reveal="i" class="card-float p-5 md:p-6" :class="s.enabled ? '' : 'opacity-70'" :style="{ backgroundImage: `var(--grad-${s.kind})` }" :data-kind="s.kind" data-testid="source-card">
             <div class="flex items-start gap-4">
               <span class="num hidden pt-1.5 text-sm text-muted sm:block" aria-hidden="true">{{ String(i + 1).padStart(2, '0') }}</span>
               <div class="min-w-0 flex-1">
@@ -236,12 +249,40 @@ onMounted(() => {
               <button type="button" class="btn-ghost" :disabled="!!busy[s.id]" data-testid="source-edit" @click="openEdit(s)"><AppIcon name="edit" :size="16" /> Editar</button>
               <button type="button" class="btn-danger" :disabled="!!busy[s.id]" data-testid="source-delete" @click="toDelete = s"><AppIcon name="trash" :size="16" /> Excluir</button>
             </div>
+
+            <DisclosurePanel v-model:open="details[s.id]" :title="`Detalhes de ${s.name}`" testid="source-details" class="mt-4 border-t border-line pt-2 sm:ml-10">
+              <template #summary>
+                <span class="font-mono text-xs tracking-[0.14em] text-muted uppercase">Detalhes da fonte</span>
+              </template>
+              <dl class="dz-group grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
+                <div v-for="[k, v] in configEntries(s)" :key="k" class="min-w-0">
+                  <dt class="label mb-0.5">config.{{ k }}</dt>
+                  <dd class="font-mono text-xs break-all text-white/85">{{ v }}</dd>
+                </div>
+                <div>
+                  <dt class="label mb-0.5">ID · tipo</dt>
+                  <dd class="num text-xs">#{{ s.id }} · {{ s.kind }}</dd>
+                </div>
+                <div>
+                  <dt class="label mb-0.5">Criada · atualizada</dt>
+                  <dd class="num text-xs">{{ fmtDateTime(s.created_at) }} · {{ fmtDateTime(s.updated_at) }}</dd>
+                </div>
+                <div>
+                  <dt class="label mb-0.5">Última coleta</dt>
+                  <dd class="num text-xs" data-testid="source-details-run">{{ s.last_fetch ? `${fmtDateTime(s.last_fetch.started_at)} · ${runDuration(s)}` : 'nunca coletada' }}</dd>
+                </div>
+                <div v-if="s.last_fetch" class="min-w-0">
+                  <dt class="label mb-0.5">Run ID</dt>
+                  <dd class="font-mono text-xs break-all">{{ s.last_fetch.run_id }}</dd>
+                </div>
+              </dl>
+            </DisclosurePanel>
           </li>
         </ul>
       </section>
 
       <!-- Settings -->
-      <section class="card h-fit p-5 md:p-6 xl:sticky xl:top-24 xl:col-span-4" aria-labelledby="settings-h" data-testid="settings">
+      <section class="card-float h-fit p-5 md:p-6 xl:sticky xl:top-24 xl:col-span-4" aria-labelledby="settings-h" data-testid="settings">
         <p class="eyebrow text-primary">Configuração</p>
         <h2 id="settings-h" class="mt-1 font-display text-2xl font-bold tracking-tight">Digest e nota de corte</h2>
         <div v-if="settingsLoading && !settings" class="mt-5 space-y-3" data-testid="settings-loading" aria-hidden="true">

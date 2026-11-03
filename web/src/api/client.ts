@@ -3,11 +3,13 @@ import type {
   Digest,
   FeedPage,
   FeedParams,
+  FeedTimeline,
   ItemDetail,
   Metrics,
   Settings,
   Source,
   SourceInput,
+  TimelineParams,
 } from './types'
 
 /** ApiError carries the HTTP status and the API's {"error": "..."} message. */
@@ -66,6 +68,8 @@ function query(params: object): string {
 
 export const api = {
   feed: (p: FeedParams, signal?: AbortSignal) => request<FeedPage>('GET', `/api/feed${query(p)}`, undefined, signal),
+  feedTimeline: (p: TimelineParams, signal?: AbortSignal) =>
+    request<FeedTimeline>('GET', `/api/feed/timeline${query(p)}`, undefined, signal),
   item: (id: number, signal?: AbortSignal) => request<ItemDetail>('GET', `/api/items/${id}`, undefined, signal),
   digests: () => request<{ digests: Digest[] | null }>('GET', '/api/digests'),
   digest: (date: string) => request<Digest>('GET', `/api/digests/${encodeURIComponent(date)}`),

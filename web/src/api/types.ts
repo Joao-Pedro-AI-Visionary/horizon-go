@@ -32,11 +32,32 @@ export interface FeedParams {
   tag?: string
   q?: string
   period?: '24h' | '7d' | '30d' | 'all'
+  /** RFC 3339; a custom range from the date scrubber (overrides period). */
+  from?: string
+  to?: string
   min_score?: number
   sort?: 'score' | 'recent'
   page?: number
   page_size?: number
 }
+
+/** GET /api/feed/timeline: feed rows per calendar day (settings timezone). */
+export interface TimelineBucket {
+  day: string // YYYY-MM-DD
+  start: string // RFC 3339, first instant of the day
+  count: number
+}
+
+export interface FeedTimeline {
+  days: number
+  timezone: string
+  from: string
+  to: string // exclusive: start of tomorrow
+  total: number
+  buckets: TimelineBucket[]
+}
+
+export type TimelineParams = Pick<FeedParams, 'source_id' | 'tag' | 'q' | 'min_score'> & { days?: number }
 
 export interface ClusterInfo {
   id: number

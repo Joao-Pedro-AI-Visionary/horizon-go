@@ -2,14 +2,17 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { ApiError, api, errorMessage } from '../api/client'
-import type { CollectReport, FeedItem, FeedPage, FeedParams, Source } from '../api/types'
+import type { CollectReport, FeedItem, FeedPage, FeedParams, Source, TimelineParams } from '../api/types'
 import AppIcon from '../components/AppIcon.vue'
 import CountUp from '../components/CountUp.vue'
+import DisclosurePanel from '../components/DisclosurePanel.vue'
 import PageHeader from '../components/PageHeader.vue'
 import ScoreBadge from '../components/ScoreBadge.vue'
+import SegmentedControl from '../components/SegmentedControl.vue'
 import StatePanel from '../components/StatePanel.vue'
+import TimelineScrubber from '../components/TimelineScrubber.vue'
 import { fmtNumber, fmtRelative, fmtScore, hostOf } from '../lib/format'
-import { staggerDelay } from '../lib/motion'
+import { reducedMotion, staggerDelay } from '../lib/motion'
 import { useToasts } from '../stores/toast'
 
 const route = useRoute()
@@ -21,11 +24,15 @@ const PAGE_SIZE = 12
 const filters = computed<FeedParams>(() => {
   const q = route.query
   const num = (v: unknown) => (v === undefined || v === '' ? undefined : Number(v))
+  // A custom range from the date scrubber (from/to) replaces the period.
+  const from = (q.from as string) || undefined
   return {
     q: (q.q as string) || undefined,
     tag: (q.tag as string) || undefined,
     source_id: num(q.source_id),
-    period: ((q.period as string) || '7d') as FeedParams['period'],
+    period: from ? undefined : (((q.period as string) || '7d') as FeedParams['period']),
+    from,
+    to: from ? (q.to as string) || undefined : undefined,
     min_score: num(q.min_score),
     sort: ((q.sort as string) || 'score') as FeedParams['sort'],
     page: num(q.page) ?? 1,
@@ -46,19 +53,34 @@ const periods = [
   { v: '30d', l: '30 dias' },
   { v: 'all', l: 'Tudo' },
 ] as const
-const periodLabel: Record<string, string> = { '24h': 'últimas 24h', '7d': '7 dias', '30d': '30 dias', all: 'todo o período' }
+const periodLabel: Record<string, string> = { '24h': 'últimas 24h', '7d': '7 dias', '30d': '30 dias', all: 'todo o período', range: 'faixa de datas' }
 const sorts = [
   { v: 'score', l: 'Maior nota' },
   { v: 'recent', l: 'Recentes' },
 ] as const
 
-// On mobile the filters below the search are collapsed behind a toggle
-// (progressive disclosure); from 640px they are always visible.
-const filtersOpen = ref(false)
-const activeFilterCount = computed(() => {
+// Source, tag and minimum score sit in a disclosure (progressive
+// disclosure); it opens by itself when one of them becomes active.
+const advancedCount = computed(() => {
   const f = filters.value
-  return [f.tag, f.source_id, f.min_score, f.period !== '7d' ? f.period : undefined, f.sort !== 'score' ? f.sort : undefined].filter(Boolean).length
+  return [f.tag, f.source_id, f.min_score].filter(Boolean).length
 })
+const filtersOpen = ref(advancedCount.value > 0)
+watch(advancedCount, (n, old) => {
+  if (n > 0 && old === 0) filtersOpen.value = true
+})
+
+// Non-time filters shared with the scrubber histogram.
+const timelineParams = computed<TimelineParams>(() => {
+  const f = filters.value
+  return { q: f.q, tag: f.tag, source_id: f.source_id, min_score: f.min_score }
+})
+function setRange(r: { from: string; to?: string }) {
+  setFilter({ from: r.from, to: r.to, period: undefined })
+}
+function clearRange() {
+  setFilter({ from: undefined, to: undefined })
+}
 
 const searchText = ref(filters.value.q ?? '')
 let debounce: ReturnType<typeof setTimeout> | undefined
@@ -98,6 +120,16 @@ async function load() {
 }
 watch(filters, load, { deep: true })
 
+// Filter changes keep the scroll position (router scrollBehavior); paging
+// brings the top of the list back into view.
+const results = ref<HTMLElement | null>(null)
+watch(
+  () => filters.value.page,
+  (n, o) => {
+    if (n !== o) results.value?.scrollIntoView({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' })
+  },
+)
+
 const sources = ref<Source[]>([])
 const threshold = ref(6)
 const thresholdLoaded = ref(false)
@@ -121,7 +153,7 @@ const totalPages = computed(() => (page.value ? Math.max(1, Math.ceil(page.value
 const enabledSources = computed(() => sources.value.filter((s) => s.enabled).length)
 const hasFilters = computed(() => {
   const f = filters.value
-  return !!(f.q || f.tag || f.source_id || f.min_score || f.period !== '7d')
+  return !!(f.q || f.tag || f.source_id || f.min_score || f.from || f.period !== '7d')
 })
 const pad2 = (n: number) => String(n).padStart(2, '0')
 
@@ -152,7 +184,7 @@ const reportLabels = { fetched: 'Coletados', published: 'Publicados', duplicates
 <template>
   <div>
     <PageHeader index="01" section="Feed" title="O que importa hoje" :muted="1" lead="Notícias de HN, Reddit e RSS ranqueadas pela nota do LLM local — uma por cluster de duplicados.">
-      <template #meta>{{ periodLabel[filters.period ?? '7d'] }} · ordem {{ filters.sort === 'recent' ? 'recente' : 'nota' }}</template>
+      <template #meta>{{ periodLabel[filters.from ? 'range' : (filters.period ?? '7d')] }} · ordem {{ filters.sort === 'recent' ? 'recente' : 'nota' }}</template>
       <template #actions>
         <button type="button" class="btn-primary group" :disabled="running" :aria-busy="running" data-testid="run-pipeline" @click="runPipeline">
           <AppIcon :name="running ? 'refresh' : 'play'" :size="16" :class="running ? 'animate-spin' : ''" />
@@ -181,7 +213,7 @@ const reportLabels = { fetched: 'Coletados', published: 'Publicados', duplicates
 
     <!-- Last pipeline report -->
     <Transition name="drop">
-      <section v-if="report" class="card mt-6 p-5" aria-labelledby="report-title" data-testid="pipeline-report">
+      <section v-if="report" class="card-float mt-6 p-5" aria-labelledby="report-title" data-testid="pipeline-report">
         <div class="flex flex-wrap items-start justify-between gap-2">
           <div>
             <p class="eyebrow text-primary">Relatório da coleta</p>
@@ -207,7 +239,7 @@ const reportLabels = { fetched: 'Coletados', published: 'Publicados', duplicates
     </Transition>
 
     <!-- Filters -->
-    <section class="mt-6 flex flex-col gap-3" aria-label="Filtros do feed">
+    <section class="mt-6 flex flex-col gap-4" aria-label="Filtros do feed">
       <div class="grid gap-3 sm:grid-cols-2 lg:flex lg:items-end">
         <div class="sm:col-span-2 lg:flex-1">
           <label for="f-search" class="label">Busca</label>
@@ -216,79 +248,59 @@ const reportLabels = { fetched: 'Coletados', published: 'Publicados', duplicates
             <input id="f-search" v-model="searchText" type="search" class="field pl-9" placeholder="Título, resumo ou motivo…" maxlength="200" data-testid="filter-search" />
           </div>
         </div>
-        <button
-          type="button"
-          class="btn-ghost w-full sm:hidden"
-          :aria-expanded="filtersOpen"
-          aria-controls="feed-more-filters"
-          data-testid="toggle-filters"
-          @click="filtersOpen = !filtersOpen"
-        >
-          <AppIcon name="filter" :size="16" />
-          {{ filtersOpen ? 'Ocultar filtros' : 'Filtros' }}<span v-if="activeFilterCount" class="rounded-full bg-primary px-2 font-mono text-xs text-ink">{{ activeFilterCount }}</span>
-        </button>
-        <div class="contents" :class="filtersOpen ? '' : 'max-sm:hidden'">
-          <div class="max-sm:order-1">
-            <span id="f-period-l" class="label">Período</span>
-            <div class="seg w-full lg:w-auto" role="group" aria-labelledby="f-period-l">
-              <button
-                v-for="p in periods"
-                :key="p.v"
-                type="button"
-                class="seg-btn"
-                :aria-pressed="filters.period === p.v"
-                :data-testid="`filter-period-${p.v}`"
-                @click="setFilter({ period: p.v })"
-              >
-                {{ p.l }}
-              </button>
-            </div>
-          </div>
-          <div class="max-sm:order-1">
-            <span id="f-sort-l" class="label">Ordem</span>
-            <div class="seg w-full lg:w-auto" role="group" aria-labelledby="f-sort-l">
-              <button
-                v-for="s in sorts"
-                :key="s.v"
-                type="button"
-                class="seg-btn"
-                :aria-pressed="filters.sort === s.v"
-                :data-testid="`filter-sort-${s.v}`"
-                @click="setFilter({ sort: s.v })"
-              >
-                {{ s.l }}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div id="feed-more-filters" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-12 lg:items-end" :class="filtersOpen ? '' : 'max-sm:hidden'">
-        <div class="lg:col-span-3">
-          <label for="f-source" class="label">Fonte</label>
-          <select id="f-source" class="field cursor-pointer" :value="filters.source_id ?? ''" data-testid="filter-source" @change="setFilter({ source_id: ($event.target as HTMLSelectElement).value || undefined })">
-            <option value="">Todas</option>
-            <option v-for="s in sources" :key="s.id" :value="s.id">{{ s.name }}</option>
-          </select>
-        </div>
-        <div class="lg:col-span-3">
-          <label for="f-tag" class="label">Tag</label>
-          <input
-            id="f-tag"
-            v-model="tagText"
-            class="field"
-            placeholder="ex.: ai"
-            maxlength="200"
-            data-testid="filter-tag"
-            @change="setFilter({ tag: tagText.trim() || undefined })"
-            @keydown.enter="setFilter({ tag: tagText.trim() || undefined })"
+        <div>
+          <span id="f-period-l" class="label">Período</span>
+          <SegmentedControl
+            :options="periods"
+            :model-value="filters.from ? undefined : filters.period"
+            labelledby="f-period-l"
+            testid="filter-period"
+            block
+            @update:model-value="setFilter({ period: $event, from: undefined, to: undefined })"
           />
         </div>
-        <div class="sm:col-span-2 lg:col-span-6">
-          <div class="flex items-center justify-between">
-            <label for="f-min" class="label">Nota mínima</label>
-            <span class="num -mt-1 text-sm text-primary" aria-hidden="true">{{ minScore.toFixed(1) }}</span>
+        <div>
+          <span id="f-sort-l" class="label">Ordem</span>
+          <SegmentedControl :options="sorts" :model-value="filters.sort" labelledby="f-sort-l" testid="filter-sort" block @update:model-value="setFilter({ sort: $event })" />
+        </div>
+      </div>
+
+      <TimelineScrubber :params="timelineParams" :from="filters.from" :to="filters.to" :period="filters.period" @range="setRange" @clear="clearRange" />
+
+      <DisclosurePanel v-model:open="filtersOpen" title="Mais filtros" testid="filters" tone="float">
+        <template #summary>
+          <span class="flex flex-wrap items-center gap-x-2 font-display text-sm font-semibold">
+            <AppIcon name="filter" :size="16" class="text-muted" /> Mais filtros
+            <span class="font-mono text-xs font-normal text-muted max-sm:hidden">fonte · tag · nota mínima</span>
+            <span v-if="advancedCount" class="rounded-full bg-primary px-2 font-mono text-xs text-ink" data-testid="filters-count">{{ advancedCount }}</span>
+          </span>
+        </template>
+        <div class="dz-group grid gap-4 sm:grid-cols-2 lg:grid-cols-12 lg:items-end">
+          <div class="lg:col-span-3">
+            <label for="f-source" class="label">Fonte</label>
+            <select id="f-source" class="field cursor-pointer" :value="filters.source_id ?? ''" data-testid="filter-source" @change="setFilter({ source_id: ($event.target as HTMLSelectElement).value || undefined })">
+              <option value="">Todas</option>
+              <option v-for="s in sources" :key="s.id" :value="s.id">{{ s.name }}</option>
+            </select>
           </div>
-          <div class="flex items-center gap-3">
+          <div class="lg:col-span-3">
+            <label for="f-tag" class="label">Tag</label>
+            <input
+              id="f-tag"
+              v-model="tagText"
+              class="field"
+              placeholder="ex.: ai"
+              maxlength="200"
+              data-testid="filter-tag"
+              @change="setFilter({ tag: tagText.trim() || undefined })"
+              @keydown.enter="setFilter({ tag: tagText.trim() || undefined })"
+            />
+          </div>
+          <div class="sm:col-span-2 lg:col-span-6">
+            <div class="flex items-center justify-between">
+              <label for="f-min" class="label">Nota mínima</label>
+              <span class="num -mt-1 text-sm text-primary" aria-hidden="true">{{ minScore.toFixed(1) }}</span>
+            </div>
             <input
               id="f-min"
               v-model.number="minScore"
@@ -301,16 +313,18 @@ const reportLabels = { fetched: 'Coletados', published: 'Publicados', duplicates
               data-testid="filter-min-score"
               @change="setFilter({ min_score: minScore > 0 ? minScore : undefined })"
             />
-            <button v-if="hasFilters" type="button" class="btn-ghost shrink-0" data-testid="clear-filters" @click="router.replace({ query: {} })">
-              <AppIcon name="close" :size="14" /> Limpar
-            </button>
           </div>
         </div>
+      </DisclosurePanel>
+      <div v-if="hasFilters" class="-mt-1 flex justify-end">
+        <button type="button" class="btn-ghost" data-testid="clear-filters" @click="router.replace({ query: {} })">
+          <AppIcon name="close" :size="14" /> Limpar filtros
+        </button>
       </div>
     </section>
 
     <!-- Results -->
-    <section class="mt-8" aria-label="Itens do feed" :aria-busy="loading">
+    <section ref="results" class="mt-8 scroll-mt-24" aria-label="Itens do feed" :aria-busy="loading">
       <div v-if="loading && !page" data-testid="feed-loading" aria-hidden="true">
         <div class="grid gap-6 border-t border-line py-8 lg:grid-cols-12">
           <div class="skeleton h-28 w-40 lg:col-span-3" />

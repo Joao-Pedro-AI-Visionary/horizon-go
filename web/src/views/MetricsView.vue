@@ -7,6 +7,7 @@ import AreaChart from '../components/AreaChart.vue'
 import BarChart from '../components/BarChart.vue'
 import CountUp from '../components/CountUp.vue'
 import PageHeader from '../components/PageHeader.vue'
+import SegmentedControl from '../components/SegmentedControl.vue'
 import StatePanel from '../components/StatePanel.vue'
 import { fmtCompact, fmtDateTime, fmtDay, fmtNumber, fmtRelative, fmtScore, kindLabel, shortDay } from '../lib/format'
 
@@ -14,6 +15,7 @@ const SERIES_1 = '#FFD400'
 const SERIES_2 = '#4F8DF7'
 
 const days = ref(14)
+const dayOptions = [7, 14, 30].map((d) => ({ v: d, l: `${d} dias` }))
 const m = ref<Metrics | null>(null)
 const loading = ref(true)
 const error = ref('')
@@ -66,9 +68,7 @@ const statusLabel: Record<string, string> = { raw: 'aguardando nota', scored: 'c
     <PageHeader index="04" section="Métricas" title="Saúde do pipeline" :muted="2">
       <template #meta>últimos <span class="num">{{ days }}</span> dias<span v-if="m" class="max-sm:hidden"> · {{ m.timezone }}</span></template>
       <template #actions>
-        <div class="seg" role="group" aria-label="Período">
-          <button v-for="d in [7, 14, 30]" :key="d" type="button" class="seg-btn" :aria-pressed="days === d" :data-testid="`metrics-days-${d}`" @click="days = d">{{ d }} dias</button>
-        </div>
+        <SegmentedControl v-model="days" :options="dayOptions" label="Período" testid="metrics-days" />
         <button type="button" class="btn-icon" :disabled="loading" aria-label="Atualizar métricas" data-testid="metrics-refresh" @click="load">
           <AppIcon name="refresh" :size="16" :class="loading ? 'animate-spin' : ''" />
         </button>

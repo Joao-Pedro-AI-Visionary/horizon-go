@@ -11,7 +11,8 @@ export const router = createRouter({
     { path: '/metrics', name: 'metrics', component: () => import('../views/MetricsView.vue'), meta: { title: 'Métricas' } },
     { path: '/:pathMatch(.*)*', name: 'not-found', component: () => import('../views/NotFoundView.vue'), meta: { title: 'Não encontrado' } },
   ],
-  scrollBehavior: (_to, _from, saved) => saved ?? { top: 0 },
+  // Filter changes only touch the query: keep the scroll position there.
+  scrollBehavior: (to, from, saved) => saved ?? (to.path === from.path ? false : { top: 0 }),
 })
 
 router.afterEach((to) => {

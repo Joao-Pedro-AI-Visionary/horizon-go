@@ -143,7 +143,7 @@ function back() {
             <p v-if="item.last_error" class="mt-3 rounded-md bg-danger/10 p-3 text-xs break-words text-danger" role="note">{{ item.last_error }}</p>
           </section>
 
-          <section v-reveal="2" class="card p-5" aria-labelledby="cluster-h" data-testid="cluster">
+          <section v-reveal="2" class="card-float p-5" aria-labelledby="cluster-h" data-testid="cluster">
             <div class="flex items-center justify-between gap-2">
               <h2 id="cluster-h" class="flex items-center gap-2 font-display text-lg font-semibold"><AppIcon name="layers" :size="18" class="text-accent" /> Cluster</h2>
               <span v-if="item.cluster" class="num text-xs text-muted">#{{ item.cluster.id }}</span>

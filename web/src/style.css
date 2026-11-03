@@ -33,6 +33,22 @@
   --dur-enter: 420ms;
   --dur-reveal: 640ms;
   --stagger: 55ms;
+
+  /* R2 (MOXEN Encuentro patterns), see docs/DESIGN.md › Referência 2. */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1); /* plain ease-out for widgets */
+  --dur-seg: 180ms; /* segmented pill slide */
+  --dur-disclose: 340ms; /* disclosure height */
+  --dur-disclose-item: 300ms; /* disclosure children fade/rise */
+  --stagger-disclose: 45ms;
+  --radius-card: 16px; /* floating cards */
+  --radius-control: 6px;
+  --shadow-float: 0 1px 0 0 rgb(255 255 255 / 0.04) inset, 0 18px 40px -18px rgb(0 0 0 / 0.85);
+  --border-float: rgb(255 255 255 / 0.07);
+  /* Soft low-opacity category/source gradients (yellow, orange, neutral). */
+  --grad-hackernews: linear-gradient(135deg, rgb(255 212 0 / 0.11) 0%, rgb(255 212 0 / 0.02) 45%, transparent 75%);
+  --grad-reddit: linear-gradient(135deg, rgb(255 122 0 / 0.11) 0%, rgb(255 122 0 / 0.02) 45%, transparent 75%);
+  --grad-rss: linear-gradient(135deg, rgb(255 255 255 / 0.07) 0%, rgb(255 255 255 / 0.015) 45%, transparent 75%);
+  --grad-scrub: linear-gradient(to top, rgb(255 212 0 / 0.95), rgb(255 212 0 / 0.55));
 }
 
 html,
@@ -117,6 +133,19 @@ body {
 @utility card {
   @apply rounded-[10px] border border-line bg-surface;
 }
+/* Floating rounded card on the dark background (R2). */
+@utility card-float {
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-float);
+  background-color: var(--color-surface);
+  box-shadow: var(--shadow-float);
+}
+/* Solid yellow surface; its primary button is btn-ink. */
+@utility surface-primary {
+  border-radius: var(--radius-card);
+  background-color: var(--color-primary);
+  color: var(--color-ink);
+}
 @utility btn {
   @apply inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-md px-4 font-display text-sm font-semibold tracking-tight select-none disabled:cursor-not-allowed disabled:opacity-50;
   transition:
@@ -130,6 +159,10 @@ body {
 }
 @utility btn-primary {
   @apply btn bg-primary text-ink hover:bg-primary-hover;
+}
+/* Primary action on a yellow/light surface: solid black. */
+@utility btn-ink {
+  @apply btn bg-ink text-primary hover:bg-black;
 }
 @utility btn-ghost {
   @apply btn border border-line bg-surface text-white hover:border-white/40;
@@ -154,15 +187,99 @@ body {
     border-color var(--dur-micro) ease,
     color var(--dur-micro) ease;
 }
-/* Segmented control (period / sort / days). */
+/* Segmented control (period / sort / days) with a sliding pill
+   (SegmentedControl.vue paints .seg-pill under the pressed button). */
 @utility seg {
-  @apply inline-flex rounded-md border border-line bg-surface p-1;
+  @apply relative isolate inline-flex rounded-md border border-line bg-surface p-1;
 }
 @utility seg-btn {
-  @apply min-h-9 min-w-11 flex-auto shrink-0 cursor-pointer rounded px-3 font-mono text-xs whitespace-nowrap text-white/75 hover:text-white aria-pressed:bg-primary aria-pressed:font-semibold aria-pressed:text-ink;
+  @apply relative z-10 min-h-9 min-w-11 flex-auto shrink-0 cursor-pointer rounded px-3 font-mono text-xs whitespace-nowrap text-white/75 hover:text-white aria-pressed:font-semibold aria-pressed:text-ink;
+  transition: color var(--dur-seg) var(--ease-out);
+}
+.seg-pill {
+  position: absolute;
+  z-index: 0;
+  top: 4px;
+  bottom: 4px;
+  left: 0;
+  border-radius: 4px;
+  background: var(--color-primary);
+  pointer-events: none;
+}
+.seg-pill.is-ready {
   transition:
-    background-color var(--dur-base) var(--ease-out-expo),
-    color var(--dur-micro) ease;
+    transform var(--dur-seg) var(--ease-out),
+    width var(--dur-seg) var(--ease-out),
+    opacity var(--dur-seg) var(--ease-out);
+}
+
+/* Disclosure (DisclosurePanel.vue): height via grid rows 0fr -> 1fr, children
+   fade in and rise 10px, staggered. Closing is faster and unstaggered. */
+.disclosure-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  visibility: hidden;
+  transition:
+    grid-template-rows 220ms var(--ease-out),
+    visibility 0s linear 220ms;
+}
+.disclosure.is-open > .disclosure-body {
+  grid-template-rows: 1fr;
+  visibility: visible;
+  transition:
+    grid-template-rows var(--dur-disclose) var(--ease-out),
+    visibility 0s;
+}
+.disclosure-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+/* Staggered children: direct children of the panel, or the children of a
+   .dz-group (a grid/list whose items should enter one by one). */
+:is(.disclosure-inner > * > :not(.dz-group), .disclosure-inner .dz-group > *) {
+  opacity: 0;
+  transform: translateY(10px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+.disclosure.is-open :is(.disclosure-inner > * > :not(.dz-group), .disclosure-inner .dz-group > *) {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity var(--dur-disclose-item) var(--ease-out),
+    transform var(--dur-disclose-item) var(--ease-out);
+  transition-delay: calc(80ms + var(--i, 0) * var(--stagger-disclose));
+}
+:is(.disclosure-inner > * > :not(.dz-group), .disclosure-inner .dz-group > *):nth-child(2) { --i: 1; }
+:is(.disclosure-inner > * > :not(.dz-group), .disclosure-inner .dz-group > *):nth-child(3) { --i: 2; }
+:is(.disclosure-inner > * > :not(.dz-group), .disclosure-inner .dz-group > *):nth-child(4) { --i: 3; }
+:is(.disclosure-inner > * > :not(.dz-group), .disclosure-inner .dz-group > *):nth-child(5) { --i: 4; }
+:is(.disclosure-inner > * > :not(.dz-group), .disclosure-inner .dz-group > *):nth-child(6) { --i: 5; }
+:is(.disclosure-inner > * > :not(.dz-group), .disclosure-inner .dz-group > *):nth-child(n + 7) { --i: 6; }
+.disclosure-chevron {
+  transition: transform var(--dur-disclose) var(--ease-out);
+}
+.disclosure.is-open .disclosure-chevron {
+  transform: rotate(180deg);
+}
+
+/* Date scrubber (TimelineScrubber.vue). */
+.scrub-bar {
+  transform-origin: 50% 100%;
+  transition:
+    background-color var(--dur-micro) ease,
+    opacity var(--dur-micro) ease;
+}
+.scrub-band,
+.scrub-thumb {
+  transition:
+    left var(--dur-micro) var(--ease-out),
+    right var(--dur-micro) var(--ease-out);
+}
+.is-dragging .scrub-band,
+.is-dragging .scrub-thumb {
+  transition: none;
 }
 
 /* Arrow that nudges forward on hover/focus of its group. */
