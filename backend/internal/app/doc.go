@@ -1,2 +1,2 @@
-// Package app holds the use cases / pipeline orchestration. Defined in Phase 1+.
+// Package app holds the use cases / pipeline orchestration.
 package app
