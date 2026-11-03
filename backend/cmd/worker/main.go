@@ -1,12 +1,14 @@
 // Command worker runs the pipeline: enabled sources -> collector -> NATS
 // items.raw -> persister -> items; then scorer (LLM rubric + embedding, N
 // workers) -> items.scored -> deduper (pgvector + LLM) -> clusters, feed_view
-// -> items.deduped.
+// -> items.deduped; plus the daily digest cron (settings: digest_cron in the
+// settings timezone, default 07:00 America/Sao_Paulo). Every Ollama call adds
+// its prompt_eval_count/eval_count to llm_usage.
 //
 //	worker --once [--seed] [--window 24h]   one cycle, then print the report
 //	worker --once --skip-collect            score and dedup what is in the database
 //	worker --once --ai=false                collect only (Phase 1 behaviour)
-//	worker [--interval 30m]                 collect periodically and run every stage continuously
+//	worker [--interval 30m] [--digest=true] collect periodically, run every stage continuously and the digest cron
 //
 // DATABASE_URL, NATS_URL, OLLAMA_URL, LLM_MODEL, LLM_NUM_CTX and EMBED_MODEL override the
 // local defaults from CLAUDE.md.
@@ -25,6 +27,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata" // America/Sao_Paulo without a system zoneinfo
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
@@ -33,6 +36,7 @@ import (
 	"github.com/jpdev/horizon-go/internal/adapters/llm/ollama"
 	"github.com/jpdev/horizon-go/internal/adapters/store/postgres"
 	"github.com/jpdev/horizon-go/internal/app"
+	"github.com/jpdev/horizon-go/internal/digest"
 	"github.com/jpdev/horizon-go/internal/domain"
 	"github.com/jpdev/horizon-go/internal/enrich"
 	"github.com/jpdev/horizon-go/internal/ingest"
@@ -58,6 +62,7 @@ func main() {
 	window := flag.Duration("window", 24*time.Hour, "only keep items published within this window")
 	timeout := flag.Duration("timeout", app.DefaultSourceTimeout, "per-source fetch timeout")
 	interval := flag.Duration("interval", 30*time.Minute, "collect interval in continuous mode")
+	withDigest := flag.Bool("digest", true, "continuous mode: run the digest cron")
 	var o aiOptions
 	flag.BoolVar(&o.enabled, "ai", true, "run the scoring and dedup stages")
 	flag.BoolVar(&o.skipCollect, "skip-collect", false, "with --once: do not collect, only process items already in the database")
@@ -72,7 +77,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := run(ctx, log, *once, *seed, *window, *timeout, *interval, o); err != nil {
+	if err := run(ctx, log, *once, *seed, *window, *timeout, *interval, *withDigest, o); err != nil {
 		log.Error("worker failed", "err", err)
 		os.Exit(1)
 	}
@@ -100,11 +105,17 @@ type aiStages struct {
 }
 
 func newAIStages(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, bus *natsbus.Bus, o aiOptions) (*aiStages, error) {
+	usage := postgres.UsageRepo{DB: pool}
 	oc := ollama.New(ollama.Config{
 		URL:        getenv("OLLAMA_URL", ollama.DefaultURL),
 		ChatModel:  getenv("LLM_MODEL", ollama.DefaultChatModel),
 		EmbedModel: getenv("EMBED_MODEL", ollama.DefaultEmbedModel),
 		NumCtx:     envInt("LLM_NUM_CTX", ollama.DefaultNumCtx),
+		OnUsage: func(ctx context.Context, u domain.TokenUsage) {
+			if err := usage.Record(context.WithoutCancel(ctx), u); err != nil {
+				log.Warn("record token usage", "err", err)
+			}
+		},
 	})
 	// items.embedding is vector(768) (nomic-embed-text).
 	an := &app.Analyzer{LLM: oc.LLM(), Embedder: oc.Embedder(), Cache: postgres.AICache{DB: pool}, Dims: 768}
@@ -127,7 +138,7 @@ func newAIStages(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, bus 
 	}, nil
 }
 
-func run(ctx context.Context, log *slog.Logger, once, seed bool, window, timeout, interval time.Duration, o aiOptions) error {
+func run(ctx context.Context, log *slog.Logger, once, seed bool, window, timeout, interval time.Duration, withDigest bool, o aiOptions) error {
 	pool, err := postgres.Connect(ctx, getenv("DATABASE_URL", defaultDSN))
 	if err != nil {
 		return fmt.Errorf("postgres: %w", err)
@@ -206,6 +217,17 @@ func run(ctx context.Context, log *slog.Logger, once, seed bool, window, timeout
 		go func() {
 			if err := ai.deduper.Run(ctx, ai.scoredCons); err != nil {
 				log.Error("deduper stopped", "err", err)
+			}
+		}()
+	}
+	if withDigest {
+		sched := &digest.Scheduler{Service: &digest.Service{Store: postgres.ReadRepo{DB: pool}}, Log: log}
+		if err := sched.Sync(ctx); err != nil {
+			return fmt.Errorf("digest cron: %w", err)
+		}
+		go func() {
+			if err := sched.Run(ctx); err != nil {
+				log.Error("digest cron stopped", "err", err)
 			}
 		}()
 	}
