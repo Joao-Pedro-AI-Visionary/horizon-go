@@ -460,6 +460,15 @@ func TestAPIAgainstPostgresAndNATS(t *testing.T) {
 		t.Fatalf("blog metrics: %+v", blogM)
 	}
 
+	// items and feed_items use the same clock (fetch time): D was published
+	// 3 days ago but fetched today, so it counts in a 1-day window.
+	e.call("GET", "/api/metrics?days=1", "", 200, &m)
+	for _, sm := range m.BySource {
+		if sm.SourceID == rd.ID && (sm.Items != 2 || sm.FeedItems != 1) {
+			t.Fatalf("reddit 1-day metrics: %+v", sm)
+		}
+	}
+
 	// --- CORS on the real router ---
 	req, _ := http.NewRequest("GET", srv.URL+"/api/feed", nil)
 	req.Header.Set("Origin", "http://localhost:5173")

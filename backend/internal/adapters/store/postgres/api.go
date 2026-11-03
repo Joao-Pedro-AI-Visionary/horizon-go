@@ -336,7 +336,7 @@ FROM d LEFT JOIN f USING (day) LEFT JOIN s USING (day) ORDER BY d.day`,
 	rows, err = r.DB.Query(ctx, `
 SELECT s.id, s.name, s.kind, s.enabled,
        (SELECT count(*) FROM items i WHERE i.source_id = s.id AND i.created_at >= $1)::int,
-       (SELECT count(*) FROM feed_view v WHERE v.source_id = s.id AND COALESCE(v.published_at, v.projected_at) >= $1)::int,
+       (SELECT count(*) FROM feed_view v JOIN items i ON i.id = v.item_id WHERE v.source_id = s.id AND i.created_at >= $1)::int,
        (SELECT round(avg(i.score)::numeric, 2)::float8 FROM items i WHERE i.source_id = s.id AND i.created_at >= $1),
        (SELECT count(*) FROM fetch_runs r WHERE r.source_id = s.id AND r.started_at >= $1 AND r.status = 'ok')::int,
        (SELECT count(*) FROM fetch_runs r WHERE r.source_id = s.id AND r.started_at >= $1 AND r.status = 'error')::int,
