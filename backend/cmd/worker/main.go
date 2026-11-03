@@ -106,7 +106,8 @@ func newAIStages(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, bus 
 		EmbedModel: getenv("EMBED_MODEL", ollama.DefaultEmbedModel),
 		NumCtx:     envInt("LLM_NUM_CTX", ollama.DefaultNumCtx),
 	})
-	an := &app.Analyzer{LLM: oc.LLM(), Embedder: oc.Embedder(), Cache: postgres.AICache{DB: pool}}
+	// items.embedding is vector(768) (nomic-embed-text).
+	an := &app.Analyzer{LLM: oc.LLM(), Embedder: oc.Embedder(), Cache: postgres.AICache{DB: pool}, Dims: 768}
 	repo := postgres.AIRepo{DB: pool}
 	rawCons, err := bus.Consumer(ctx, enrich.ScorerDurable, bus.RawSubject(), enrich.AckWait)
 	if err != nil {
@@ -290,7 +291,7 @@ func printAIReport(ctx context.Context, pool *pgxpool.Pool, ai *aiStages, scored
 SELECT CASE WHEN score >= 9 THEN '9-10' WHEN score >= 7 THEN '7-8' WHEN score >= 5 THEN '5-6' WHEN score >= 3 THEN '3-4' ELSE '0-2' END, count(*)
 FROM items WHERE score IS NOT NULL GROUP BY 1 ORDER BY 1 DESC`)
 	printQuery(ctx, pool, "score stats (n | min | avg | max):",
-		`SELECT count(score), min(score), round(avg(score)::numeric, 2), max(score) FROM items`)
+		`SELECT count(score), min(score), round(avg(score)::numeric, 2)::float8, max(score) FROM items`)
 	printQuery(ctx, pool, "clusters (total | with duplicates | items in those | feed_view rows):", `
 SELECT (SELECT count(*) FROM clusters), (SELECT count(*) FROM clusters WHERE item_count > 1),
        (SELECT COALESCE(sum(item_count), 0) FROM clusters WHERE item_count > 1), (SELECT count(*) FROM feed_view)`)
