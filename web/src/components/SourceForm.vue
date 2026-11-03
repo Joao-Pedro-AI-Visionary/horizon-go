@@ -107,7 +107,7 @@ async function submit() {
             <label
               v-for="k in (['hackernews', 'reddit', 'rss'] as const)"
               :key="k"
-              class="flex min-h-11 items-center justify-center rounded-xl border px-2 text-sm font-medium has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-primary"
+              class="flex min-h-11 items-center justify-center rounded-md border px-2 text-sm font-medium has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-primary"
               :class="[form.kind === k ? 'border-primary bg-primary/10 text-primary' : 'border-line bg-raised', editing ? 'cursor-not-allowed opacity-60' : 'cursor-pointer']"
             >
               <input v-model="form.kind" type="radio" name="kind" :value="k" class="sr-only" :disabled="editing" :data-testid="`source-kind-${k}`" />

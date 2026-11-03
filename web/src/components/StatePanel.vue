@@ -8,19 +8,16 @@ defineEmits<{ retry: [] }>()
 
 <template>
   <div
-    class="card flex flex-col items-center gap-3 px-6 py-10 text-center"
+    class="flex flex-col items-start gap-3 border-y border-line py-12 md:py-16"
     :role="kind === 'error' ? 'alert' : 'status'"
     :data-testid="testid ?? `state-${kind}`"
   >
-    <span
-      class="inline-flex size-12 items-center justify-center rounded-full"
-      :class="kind === 'error' ? 'bg-danger/15 text-danger' : 'bg-primary/10 text-primary'"
-    >
-      <AppIcon :name="kind === 'error' ? 'alert' : 'layers'" :size="22" />
+    <span class="eyebrow flex items-center gap-2" :class="kind === 'error' ? 'text-danger' : 'text-primary'">
+      <AppIcon :name="kind === 'error' ? 'alert' : 'layers'" :size="14" /> {{ kind === 'error' ? 'Erro' : 'Vazio' }}
     </span>
-    <p class="font-display text-lg font-semibold">{{ title }}</p>
-    <p v-if="detail" class="max-w-md text-sm text-muted">{{ detail }}</p>
-    <div v-if="$slots.default || kind === 'error'" class="mt-1 flex flex-wrap justify-center gap-2">
+    <p class="display-lg max-w-3xl">{{ title }}</p>
+    <p v-if="detail" class="max-w-xl text-white/70">{{ detail }}</p>
+    <div v-if="$slots.default || kind === 'error'" class="mt-3 flex flex-wrap gap-2">
       <slot />
       <button v-if="kind === 'error'" type="button" class="btn-ghost" data-testid="retry" @click="$emit('retry')">
         <AppIcon name="refresh" :size="16" /> Tentar de novo
