@@ -12,10 +12,10 @@ test.describe('feed actions', () => {
     await expect(page.getByTestId('feed-card').first()).toBeVisible()
     const total = await feedTotal(page)
 
-    if ((page.viewportSize()?.width ?? 1440) < 640) {
-      await expect(page.getByTestId('filter-source')).toBeHidden()
-      await page.getByTestId('toggle-filters').click()
-    }
+    // Source, tag and min score live in the "Mais filtros" disclosure.
+    await expect(page.getByTestId('filter-source')).toBeHidden()
+    await page.getByTestId('filters-toggle').click()
+    await expect(page.getByTestId('filter-source')).toBeVisible()
 
     // Tag chip from a card filters by that tag.
     const chip = page.getByTestId('tag-chip').first()
@@ -57,6 +57,10 @@ test.describe('feed actions', () => {
       await page.getByTestId('page-next').click()
       await expect(page).toHaveURL(/page=2/)
       await expect(page.getByTestId('feed-card').first()).toBeVisible()
+      // Paging brings the top of the list back into view.
+      await expect
+        .poll(() => page.evaluate(() => document.querySelector('[aria-label="Itens do feed"]')!.getBoundingClientRect().top))
+        .toBeLessThan(200)
       await page.getByTestId('page-prev').click()
       await expect(page).not.toHaveURL(/page=2/)
     }
