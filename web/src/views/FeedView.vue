@@ -120,15 +120,13 @@ async function load() {
 }
 watch(filters, load, { deep: true })
 
-// Filter changes keep the scroll position (router scrollBehavior); paging
-// brings the top of the list back into view.
+// Filter changes keep the scroll position (router scrollBehavior); only the
+// pagination buttons bring the top of the list back into view.
 const results = ref<HTMLElement | null>(null)
-watch(
-  () => filters.value.page,
-  (n, o) => {
-    if (n !== o) results.value?.scrollIntoView({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' })
-  },
-)
+function goPage(p: number) {
+  setFilter({ page: p })
+  results.value?.scrollIntoView({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' })
+}
 
 const sources = ref<Source[]>([])
 const threshold = ref(6)
@@ -267,7 +265,7 @@ const reportLabels = { fetched: 'Coletados', published: 'Publicados', duplicates
 
       <TimelineScrubber :params="timelineParams" :from="filters.from" :to="filters.to" :period="filters.period" @range="setRange" @clear="clearRange" />
 
-      <DisclosurePanel v-model:open="filtersOpen" title="Mais filtros" testid="filters" tone="float">
+      <DisclosurePanel v-model:open="filtersOpen" title="Mais filtros" testid="filters" tone="float" region>
         <template #summary>
           <span class="flex flex-wrap items-center gap-x-2 font-display text-sm font-semibold">
             <AppIcon name="filter" :size="16" class="text-muted" /> Mais filtros
@@ -458,14 +456,14 @@ const reportLabels = { fetched: 'Coletados', published: 'Publicados', duplicates
         </div>
 
         <nav class="mt-8 grid grid-cols-[1fr_auto_1fr] items-center gap-3" aria-label="Paginação" data-testid="pagination">
-          <button type="button" class="btn-ghost group justify-self-start" :disabled="filters.page! <= 1 || loading" data-testid="page-prev" @click="setFilter({ page: filters.page! - 1 })">
+          <button type="button" class="btn-ghost group justify-self-start" :disabled="filters.page! <= 1 || loading" data-testid="page-prev" @click="goPage(filters.page! - 1)">
             <AppIcon name="chevronLeft" :size="16" /> Anterior
           </button>
           <p class="num text-sm text-muted" aria-live="polite">
             <span class="sr-only">Página {{ filters.page }} de {{ totalPages }}</span>
             <span aria-hidden="true"><span class="text-xl text-white">{{ pad2(filters.page ?? 1) }}</span> / {{ pad2(totalPages) }}</span>
           </p>
-          <button type="button" class="btn-ghost group justify-self-end" :disabled="filters.page! >= totalPages || loading" data-testid="page-next" @click="setFilter({ page: filters.page! + 1 })">
+          <button type="button" class="btn-ghost group justify-self-end" :disabled="filters.page! >= totalPages || loading" data-testid="page-next" @click="goPage(filters.page! + 1)">
             Próxima <AppIcon name="chevronRight" :size="16" class="nudge" />
           </button>
         </nav>

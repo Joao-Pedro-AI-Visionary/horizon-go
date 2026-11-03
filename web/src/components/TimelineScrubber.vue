@@ -25,16 +25,17 @@ const error = ref('')
 let ctrl: AbortController | undefined
 async function load() {
   ctrl?.abort()
-  ctrl = new AbortController()
+  const mine = (ctrl = new AbortController())
   loading.value = true
   error.value = ''
   try {
-    tl.value = await api.feedTimeline({ ...props.params, days: props.days ?? 30 }, ctrl.signal)
+    tl.value = await api.feedTimeline({ ...props.params, days: props.days ?? 30 }, mine.signal)
   } catch (err) {
     if ((err as Error).name === 'AbortError') return
     error.value = errorMessage(err)
   } finally {
-    loading.value = false
+    // An aborted request must not clear the flag of the one replacing it.
+    if (ctrl === mine) loading.value = false
   }
 }
 watch(() => JSON.stringify(props.params), load, { immediate: true })
@@ -71,14 +72,26 @@ const derived = computed<[number, number]>(() => {
 const lo = ref(0)
 const hi = ref(0)
 const dragging = ref<null | 'lo' | 'hi' | 'pending'>(null)
+// Set by any gesture; cleared when the URL state changes.
+const touched = ref(false)
 watch(
   derived,
   ([a, b]) => {
     if (dragging.value) return
     lo.value = a
     hi.value = b
+    touched.value = false
   },
   { immediate: true },
+)
+
+// A deep link may start before the window: the handle pins to the first
+// day, so the label shows the real start from the URL and no count.
+function dayIn(iso: string, tz: string): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso))
+}
+const fromOutside = computed(
+  () => !touched.value && !!props.from && n.value > 0 && Date.parse(props.from) < Date.parse(buckets.value[0]!.start),
 )
 
 const selCount = computed(() => buckets.value.slice(lo.value, hi.value + 1).reduce((s, b) => s + b.count, 0))
@@ -88,40 +101,71 @@ function short(day?: string) {
   const [, m, d] = day.split('-')
   return `${d} ${MONTHS[Number(m) - 1]}`
 }
-const loDay = computed(() => buckets.value[lo.value]?.day)
+const loDay = computed(() => (fromOutside.value && tl.value ? dayIn(props.from!, tl.value.timezone) : buckets.value[lo.value]?.day))
 const hiDay = computed(() => buckets.value[hi.value]?.day)
 const valueText = (i: number) => {
   const b = buckets.value[i]
   return b ? `${fmtDay(b.day)}, ${b.count} ${b.count === 1 ? 'item' : 'itens'}` : ''
 }
 
+// Range at the start of the current gesture: an unchanged range is not
+// committed (a click on a handle, or keys that come back to the start).
+let startLo = -1
+let startHi = -1
+function beginGesture() {
+  startLo = lo.value
+  startHi = hi.value
+  touched.value = true
+}
 function commit() {
   const b = buckets.value
   if (!b.length) return
-  const [a, z] = derived.value
-  if (custom.value && a === lo.value && z === hi.value) return
-  emit('range', { from: b[lo.value]!.start, to: hi.value >= b.length - 1 ? undefined : b[hi.value + 1]!.start })
+  if (lo.value === startLo && hi.value === startHi) {
+    touched.value = false
+    return
+  }
+  // `to` is always sent (the histogram's own end on the last day), so the
+  // feed returns exactly the rows the histogram counted.
+  emit('range', { from: b[lo.value]!.start, to: b[hi.value + 1]?.start ?? tl.value!.to })
 }
 
 // --- Pointer ---
 const track = ref<HTMLElement | null>(null)
 const thumbs = { lo: ref<HTMLElement | null>(null), hi: ref<HTMLElement | null>(null) }
 let downIdx = 0
-function idxFromX(clientX: number): number {
+// Dragging a handle moves its edge by the pointer delta (grabOffset keeps
+// the grabbed point under the finger, so a plain click changes nothing); a
+// tap on the track picks the tapped day for the nearest handle.
+let mode: 'edge' | 'bucket' = 'bucket'
+let grabOffset = 0
+function frac(clientX: number): number {
   const r = track.value!.getBoundingClientRect()
-  return Math.min(n.value - 1, Math.max(0, Math.floor(((clientX - r.left) / r.width) * n.value)))
+  return (clientX - r.left) / r.width
 }
+const clampIdx = (i: number) => Math.min(n.value - 1, Math.max(0, i))
+const idxFromX = (clientX: number) => clampIdx(Math.floor(frac(clientX) * n.value))
 function moveTo(which: 'lo' | 'hi', i: number) {
   if (which === 'lo') lo.value = Math.min(i, hi.value)
   else hi.value = Math.max(i, lo.value)
 }
 function onDown(e: PointerEvent) {
   if (!n.value || e.button !== 0) return
-  const i = idxFromX(e.clientX)
+  beginGesture()
+  track.value!.setPointerCapture(e.pointerId)
+  e.preventDefault()
   const t = (e.target as HTMLElement).closest<HTMLElement>('[data-thumb]')?.dataset.thumb as 'lo' | 'hi' | undefined
+  if (t) {
+    mode = 'edge'
+    const r = track.value!.getBoundingClientRect()
+    grabOffset = e.clientX - (r.left + ((t === 'lo' ? lo.value : hi.value + 1) / n.value) * r.width)
+    dragging.value = t
+    thumbs[t].value?.focus({ preventScroll: true })
+    return
+  }
+  mode = 'bucket'
+  const i = idxFromX(e.clientX)
   let which: 'lo' | 'hi' | 'pending'
-  if (t && lo.value !== hi.value) which = t
-  else if (i < lo.value) which = 'lo'
+  if (i < lo.value) which = 'lo'
   else if (i > hi.value) which = 'hi'
   else if (lo.value === hi.value) which = 'pending'
   else which = i - lo.value <= hi.value - i ? 'lo' : 'hi'
@@ -131,11 +175,18 @@ function onDown(e: PointerEvent) {
     moveTo(which, i)
     thumbs[which].value?.focus({ preventScroll: true })
   }
-  track.value!.setPointerCapture(e.pointerId)
-  e.preventDefault()
 }
 function onMove(e: PointerEvent) {
   if (!dragging.value) return
+  if (mode === 'edge') {
+    const b = Math.round(frac(e.clientX - grabOffset) * n.value)
+    // Overlapping handles: pushing one past the other hands the drag over.
+    if (dragging.value === 'hi' && b < lo.value) dragging.value = 'lo'
+    else if (dragging.value === 'lo' && b > hi.value + 1) dragging.value = 'hi'
+    if (dragging.value === 'lo') moveTo('lo', clampIdx(b))
+    else moveTo('hi', clampIdx(b - 1))
+    return
+  }
   const i = idxFromX(e.clientX)
   if (dragging.value === 'pending') {
     if (i === downIdx) return
@@ -168,9 +219,13 @@ function onKey(e: KeyboardEvent, which: 'lo' | 'hi') {
   }[e.key]
   if (next === undefined) return
   e.preventDefault()
+  if (keyTimer === undefined) beginGesture()
   moveTo(which, Math.min(last, Math.max(0, next)))
   clearTimeout(keyTimer)
-  keyTimer = setTimeout(commit, 400)
+  keyTimer = setTimeout(() => {
+    keyTimer = undefined
+    commit()
+  }, 400)
 }
 
 const pct = (i: number) => (n.value ? (i / n.value) * 100 : 0)
@@ -190,8 +245,11 @@ const axis = computed(() => {
         </p>
       </div>
       <p class="num text-sm text-muted">
-        <span class="text-xl font-bold text-white" data-testid="scrub-count">{{ fmtNumber(selCount) }}</span>
-        {{ selCount === 1 ? 'item' : 'itens' }} nestes dias
+        <template v-if="fromOutside">início antes da janela de {{ tl?.days ?? 30 }} dias</template>
+        <template v-else>
+          <span class="text-xl font-bold text-white" data-testid="scrub-count">{{ fmtNumber(selCount) }}</span>
+          {{ selCount === 1 ? 'item' : 'itens' }} nestes dias
+        </template>
       </p>
     </div>
 

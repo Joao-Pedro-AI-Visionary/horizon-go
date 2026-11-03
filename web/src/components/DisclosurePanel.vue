@@ -8,7 +8,9 @@ import AppIcon from './AppIcon.vue'
 // staggered. Closed content is visibility:hidden, so it leaves the tab order
 // and the accessibility tree. Styles live in style.css (.disclosure*).
 const open = defineModel<boolean>('open', { default: false })
-defineProps<{ title: string; testid: string; tone?: 'plain' | 'float' }>()
+// region: expose the body as a landmark (only for a single, page-level panel;
+// repeated panels such as per-source details would flood the landmark list).
+defineProps<{ title: string; testid: string; tone?: 'plain' | 'float'; region?: boolean }>()
 const id = useId()
 </script>
 
@@ -27,7 +29,7 @@ const id = useId()
       <span class="min-w-0 flex-1"><slot name="summary">{{ title }}</slot></span>
       <AppIcon name="chevronDown" :size="18" class="disclosure-chevron shrink-0 text-muted" />
     </button>
-    <div :id="`${id}-body`" class="disclosure-body" role="region" :aria-labelledby="`${id}-btn`" :data-testid="`${testid}-body`">
+    <div :id="`${id}-body`" class="disclosure-body" :role="region ? 'region' : undefined" :aria-labelledby="region ? `${id}-btn` : undefined" :data-testid="`${testid}-body`">
       <div class="disclosure-inner">
         <div :class="tone === 'float' ? 'px-4 pb-5 md:px-5' : 'pt-3'"><slot /></div>
       </div>
