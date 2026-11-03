@@ -151,3 +151,47 @@ func TestInvalidConfig(t *testing.T) {
 		t.Fatal("subreddit with path chars must be invalid")
 	}
 }
+
+const redditAtom = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>golang</title>
+<entry><author><name>/u/gopher</name></author><id>t3_aaa</id>
+<link href="https://www.reddit.com/r/golang/comments/aaa/link_post/"/>
+<updated>%[1]s</updated><published>%[1]s</published><title>Link post</title>
+<content type="html">&lt;div&gt;submitted by gopher &lt;a href=&quot;https://blog.example.com/x&quot;&gt;[link]&lt;/a&gt; &lt;a href=&quot;https://www.reddit.com/r/golang/comments/aaa/link_post/&quot;&gt;[comments]&lt;/a&gt;&lt;/div&gt;</content></entry>
+<entry><author><name>/u/asker</name></author><id>t3_bbb</id>
+<link href="https://www.reddit.com/r/golang/comments/bbb/self_post/"/>
+<published>%[1]s</published><title>Self post</title>
+<content type="html">&lt;p&gt;How do I x?&lt;/p&gt; &lt;a href=&quot;https://www.reddit.com/r/golang/comments/bbb/self_post/&quot;&gt;[link]&lt;/a&gt;</content></entry>
+<entry><id>t3_old</id><link href="https://www.reddit.com/r/golang/comments/old/x/"/><published>2020-01-01T00:00:00+00:00</published><title>Old</title></entry>
+</feed>`
+
+func TestFallsBackToRSSWhenJSONBlocked(t *testing.T) {
+	var rssUA, rssPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".json") {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		rssUA, rssPath = r.UserAgent(), r.URL.Path
+		fmt.Fprintf(w, redditAtom, now.Add(-time.Hour).Format(time.RFC3339))
+	}))
+	defer srv.Close()
+	src := New(Params{SourceID: 7, Name: "r/golang", BaseURL: srv.URL, Client: srv.Client(), Config: Config{Subreddit: "golang", Sort: "new"}})
+	items, err := src.Fetch(context.Background(), now.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("Fetch with RSS fallback: %v", err)
+	}
+	if rssPath != "/r/golang/new/.rss" || rssUA != UserAgent {
+		t.Fatalf("rss request path=%q ua=%q", rssPath, rssUA)
+	}
+	if len(items) != 2 {
+		t.Fatalf("want 2 items, got %d: %+v", len(items), items)
+	}
+	link, self := items[0], items[1]
+	if link.ExternalID != "aaa" || link.URL != "https://blog.example.com/x" || link.Author != "gopher" || link.SourceID != 7 {
+		t.Fatalf("link post via rss: %+v", link)
+	}
+	if self.ExternalID != "bbb" || self.URL != "https://www.reddit.com/r/golang/comments/bbb/self_post/" {
+		t.Fatalf("self post via rss: %+v", self)
+	}
+}

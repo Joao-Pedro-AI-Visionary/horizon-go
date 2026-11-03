@@ -1,17 +1,24 @@
 // Package reddit is the Reddit source adapter, using the public listing JSON
-// (https://www.reddit.com/r/<sub>/<sort>.json).
+// (https://www.reddit.com/r/<sub>/<sort>.json). When Reddit blocks the JSON
+// endpoint (403) it falls back to the subreddit Atom feed, like upstream
+// Horizon does; the feed carries no score, so min_score is not applied there.
 package reddit
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/mmcdole/gofeed"
 
 	"github.com/jpdev/horizon-go/internal/adapters/source/internal/textutil"
 	"github.com/jpdev/horizon-go/internal/domain"
@@ -26,6 +33,9 @@ const UserAgent = "server:horizon-go:v0.1 (by JpDev; +https://github.com/Thysrae
 // ErrRateLimited is returned when Reddit keeps answering 429.
 var ErrRateLimited = errors.New("reddit: rate limited (429)")
 
+// ErrBlocked is returned when Reddit answers 403.
+var ErrBlocked = errors.New("reddit: blocked (403)")
+
 const (
 	maxAttempts       = 3
 	defaultRetryAfter = 2 * time.Second
@@ -33,11 +43,13 @@ const (
 	defaultLimit      = 25
 	maxLimit          = 100
 	maxContentRunes   = 1500
+	maxBodyBytes      = 10 << 20
 )
 
 var (
 	subredditRe = regexp.MustCompile(`^[A-Za-z0-9_]{2,21}$`)
 	validSorts  = map[string]bool{"hot": true, "new": true, "top": true, "rising": true}
+	linkHrefRe  = regexp.MustCompile(`<a href="([^"]+)">\[link\]</a>`)
 )
 
 // Config is the JSON stored in sources.config for kind=reddit.
@@ -142,9 +154,16 @@ func (s *Source) Fetch(ctx context.Context, since time.Time) ([]domain.Item, err
 	}
 	endpoint := fmt.Sprintf("%s/r/%s/%s.json?%s", s.base, s.cfg.Subreddit, s.cfg.Sort, q.Encode())
 
-	var l listing
-	if err := s.get(ctx, endpoint, &l); err != nil {
+	body, err := s.get(ctx, endpoint, "application/json")
+	if errors.Is(err, ErrBlocked) {
+		return s.fetchRSS(ctx, since, err)
+	}
+	if err != nil {
 		return nil, err
+	}
+	var l listing
+	if err := json.Unmarshal(body, &l); err != nil {
+		return nil, fmt.Errorf("reddit decode: %w", err)
 	}
 	fetchedAt := time.Now().UTC()
 	var items []domain.Item
@@ -176,40 +195,88 @@ func (s *Source) Fetch(ctx context.Context, since time.Time) ([]domain.Item, err
 	return items, nil
 }
 
-// get performs the request, honoring 429 Retry-After up to maxAttempts.
-func (s *Source) get(ctx context.Context, endpoint string, v any) error {
+// fetchRSS reads /r/<sub>/<sort>/.rss after the JSON listing was blocked.
+func (s *Source) fetchRSS(ctx context.Context, since time.Time, jsonErr error) ([]domain.Item, error) {
+	endpoint := fmt.Sprintf("%s/r/%s/%s/.rss?limit=%d", s.base, s.cfg.Subreddit, s.cfg.Sort, s.cfg.Limit)
+	body, err := s.get(ctx, endpoint, "application/atom+xml")
+	if err != nil {
+		return nil, fmt.Errorf("json: %v; rss fallback: %w", jsonErr, err)
+	}
+	feed, err := gofeed.NewParser().Parse(bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("reddit rss parse: %w", err)
+	}
+	fetchedAt := time.Now().UTC()
+	var items []domain.Item
+	for _, e := range feed.Items {
+		published := e.PublishedParsed
+		if published == nil {
+			published = e.UpdatedParsed
+		}
+		if e.Title == "" || e.Link == "" || published == nil || published.Before(since) {
+			continue
+		}
+		u := e.Link
+		if m := linkHrefRe.FindStringSubmatch(e.Content); m != nil {
+			u = m[1]
+		}
+		author := ""
+		if len(e.Authors) > 0 && e.Authors[0] != nil {
+			author = strings.TrimPrefix(e.Authors[0].Name, "/u/")
+		}
+		content := ""
+		if u == e.Link {
+			content = textutil.Truncate(textutil.StripHTML(e.Content), maxContentRunes)
+		}
+		items = append(items, domain.Item{
+			SourceID:    s.sourceID,
+			ExternalID:  strings.TrimPrefix(e.GUID, "t3_"),
+			URL:         u,
+			Title:       e.Title,
+			Content:     content,
+			Author:      author,
+			PublishedAt: published.UTC(),
+			FetchedAt:   fetchedAt,
+		})
+	}
+	return items, nil
+}
+
+// get performs the request and returns the body, honoring 429 Retry-After
+// up to maxAttempts. 403 maps to ErrBlocked.
+func (s *Source) get(ctx context.Context, endpoint, accept string) ([]byte, error) {
 	for attempt := 1; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		req.Header.Set("User-Agent", UserAgent)
-		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Accept", accept)
 		resp, err := s.client.Do(req)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if resp.StatusCode == http.StatusTooManyRequests {
-			wait := retryAfter(resp.Header.Get("Retry-After"), s.maxWait)
-			resp.Body.Close()
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+		resp.Body.Close()
+		switch {
+		case resp.StatusCode == http.StatusTooManyRequests:
 			if attempt >= maxAttempts {
-				return fmt.Errorf("%w after %d attempts", ErrRateLimited, attempt)
+				return nil, fmt.Errorf("%w after %d attempts", ErrRateLimited, attempt)
 			}
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(wait):
+				return nil, ctx.Err()
+			case <-time.After(retryAfter(resp.Header.Get("Retry-After"), s.maxWait)):
 			}
 			continue
+		case resp.StatusCode == http.StatusForbidden:
+			return nil, fmt.Errorf("%w: GET %s: status 403", ErrBlocked, endpoint)
+		case resp.StatusCode != http.StatusOK:
+			return nil, fmt.Errorf("reddit GET %s: status %d", endpoint, resp.StatusCode)
+		case readErr != nil:
+			return nil, readErr
 		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("reddit GET %s: status %d", endpoint, resp.StatusCode)
-		}
-		if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
-			return fmt.Errorf("reddit decode: %w", err)
-		}
-		return nil
+		return body, nil
 	}
 }
 
