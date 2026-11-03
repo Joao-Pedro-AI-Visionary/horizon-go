@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -392,5 +393,237 @@ func TestVectorLiteralRoundTrip(t *testing.T) {
 	got, err := postgres.ParseVector(postgres.VectorLiteral(v))
 	if err != nil || len(got) != 3 || got[0] != 0.5 || got[1] != -1.25 || got[2] != float32(3e-7) {
 		t.Fatalf("round trip = %v, %v", got, err)
+	}
+}
+
+// insertScored adds a scored, unclustered item with a fixed embedding.
+func insertScored(t *testing.T, ctx context.Context, pool *pgxpool.Pool, srcID int64, key string, score float64, at time.Time, vec []float32) int64 {
+	t.Helper()
+	var id int64
+	err := pool.QueryRow(ctx, `
+INSERT INTO items (source_id, external_id, url, url_normalized, url_hash, title, status, score, summary, embedding, published_at)
+VALUES ($1, $2, $3, $3, $2, $4, 'scored', $5, 's', $6::vector, $7) RETURNING id`,
+		srcID, key, "https://example.test/"+key, "title "+key, score, postgres.VectorLiteral(vec), at).Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// rot returns the unit vector at angle deg in the (e0, e1) plane.
+func rot(deg float64) []float32 {
+	v := make([]float32, 768)
+	r := deg * math.Pi / 180
+	v[0], v[1] = float32(math.Cos(r)), float32(math.Sin(r))
+	return v
+}
+
+func TestDedupBridgeMergesClusters(t *testing.T) {
+	if os.Getenv("HORIZON_SKIP_INTEGRATION") == "1" {
+		t.Skip("HORIZON_SKIP_INTEGRATION=1")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool := testDB(t, ctx)
+	bus := testBus(t, ctx)
+	src, err := postgres.SourceRepo{DB: pool}.Create(ctx, domain.SourceConfig{Kind: domain.KindRSS, Name: "bridge", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	// P·Q = cos 40° = .766 (distinct); R·P = R·Q = cos 20° = .94 (direct).
+	p := insertScored(t, ctx, pool, src.ID, "P", 5, now.Add(-3*time.Hour), rot(-20))
+	q := insertScored(t, ctx, pool, src.ID, "Q", 8, now.Add(-2*time.Hour), rot(20))
+	r := insertScored(t, ctx, pool, src.ID, "R", 6, now.Add(-time.Hour), rot(0))
+
+	llm := &scriptedLLM{answer: `{"duplicates": []}`}
+	ded := &Deduper{Repo: postgres.AIRepo{DB: pool}, Analyzer: analyzerWith(llm), Bus: bus}
+	var res []postgres.ClusterResult
+	for _, id := range []int64{p, q, r} {
+		cr, err := ded.DedupItem(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res = append(res, cr)
+	}
+	if res[0].ClusterID == res[1].ClusterID {
+		t.Fatalf("P and Q must start in different clusters: %+v", res)
+	}
+	bridge := res[2]
+	if bridge.Size != 3 || bridge.PrimaryID != q || len(bridge.Merged) != 1 {
+		t.Fatalf("bridge result = %+v, want size 3, primary Q, one absorbed cluster", bridge)
+	}
+	if llm.calls != 0 {
+		t.Errorf("no ambiguous pair, LLM calls = %d", llm.calls)
+	}
+
+	var clusters, members, count int
+	if err := pool.QueryRow(ctx, `SELECT count(*), max(item_count) FROM clusters`).Scan(&clusters, &count); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM items WHERE cluster_id = $1`, bridge.ClusterID).Scan(&members); err != nil {
+		t.Fatal(err)
+	}
+	if clusters != 1 || count != 3 || members != 3 {
+		t.Fatalf("clusters=%d item_count=%d members=%d, want 1/3/3", clusters, count, members)
+	}
+	var feed string
+	if err := pool.QueryRow(ctx, `SELECT string_agg(item_id || ':' || duplicate_count || ':' || cluster_id, ',') FROM feed_view`).Scan(&feed); err != nil {
+		t.Fatal(err)
+	}
+	if want := fmt.Sprintf("%d:2:%d", q, bridge.ClusterID); feed != want {
+		t.Errorf("feed_view = %s, want %s", feed, want)
+	}
+}
+
+// flakyLLM always fails with err or answers raw (test-only).
+type flakyLLM struct {
+	err error
+	raw string
+}
+
+func (f flakyLLM) Model() string { return "flaky" }
+func (f flakyLLM) Chat(context.Context, ports.ChatRequest) (string, error) {
+	return f.raw, f.err
+}
+
+func TestScoreFailuresCountOnlyInvalidOutput(t *testing.T) {
+	if os.Getenv("HORIZON_SKIP_INTEGRATION") == "1" {
+		t.Skip("HORIZON_SKIP_INTEGRATION=1")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool := testDB(t, ctx)
+	bus := testBus(t, ctx)
+	src, err := postgres.SourceRepo{DB: pool}.Create(ctx, domain.SourceConfig{Kind: domain.KindRSS, Name: "flaky", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it := domain.Item{SourceID: src.ID, ExternalID: "x", URL: "https://example.test/x", Title: "x", PublishedAt: time.Now()}
+	if err := it.Prepare(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (postgres.ItemRepo{DB: pool}).Upsert(ctx, it); err != nil {
+		t.Fatal(err)
+	}
+	state := func() (string, int, string) {
+		var st, last string
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT status, score_attempts, last_error FROM items`).Scan(&st, &n, &last); err != nil {
+			t.Fatal(err)
+		}
+		return st, n, last
+	}
+	scorer := func(llm ports.LLM) *Scorer {
+		an := &app.Analyzer{LLM: llm, Embedder: fakeEmbed{&fakeModel{}}, Retry: retry.Policy{Attempts: 1}}
+		return &Scorer{Repo: postgres.AIRepo{DB: pool}, Analyzer: an, Bus: bus, Workers: 1, MaxAttempts: 2}
+	}
+
+	// An outage records the error but keeps the attempts and the queue.
+	if err := scorer(flakyLLM{err: errors.New("connection refused")}).Drain(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if st, n, last := state(); st != "raw" || n != 0 || !strings.Contains(last, "connection refused") {
+		t.Fatalf("after outage: status=%s attempts=%d last=%q", st, n, last)
+	}
+	// Invalid output spends attempts; at MaxAttempts the item leaves the queue.
+	for range 2 {
+		if err := scorer(flakyLLM{raw: "not json"}).Drain(ctx, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if st, n, _ := state(); st != "failed" || n != 2 {
+		t.Fatalf("after invalid outputs: status=%s attempts=%d, want failed/2", st, n)
+	}
+	// A failed item is not sent to the model again, even if a message names it.
+	var id int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM items`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := scorer(flakyLLM{raw: `{"score": 5}`}).ScoreItem(ctx, id)
+	if ok || err != nil {
+		t.Fatalf("ScoreItem on failed item = %v, %v; want skipped", ok, err)
+	}
+}
+
+func TestRunStagesContinuouslyAndStopCleanly(t *testing.T) {
+	if os.Getenv("HORIZON_SKIP_INTEGRATION") == "1" {
+		t.Skip("HORIZON_SKIP_INTEGRATION=1")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool := testDB(t, ctx)
+	bus := testBus(t, ctx)
+	src, err := postgres.SourceRepo{DB: pool}.Create(ctx, domain.SourceConfig{Kind: domain.KindRSS, Name: "live", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	var raw []domain.Item
+	for _, f := range fixture[1:4] { // A, B, C: one cluster
+		it := domain.Item{SourceID: src.ID, ExternalID: f.key, URL: "https://example.test/" + f.key, Title: f.title, PublishedAt: now.Add(-f.ago)}
+		if err := it.Prepare(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := (postgres.ItemRepo{DB: pool}).Upsert(ctx, it); err != nil {
+			t.Fatal(err)
+		}
+		raw = append(raw, it)
+	}
+	model := &fakeModel{}
+	an := &app.Analyzer{LLM: model, Embedder: fakeEmbed{model}, Retry: retry.Policy{Attempts: 1}}
+	ai := postgres.AIRepo{DB: pool}
+	rawCons, err := bus.Consumer(ctx, "live-scorer", bus.RawSubject(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scoredCons, err := bus.Consumer(ctx, "live-deduper", bus.ScoredSubject(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runCtx, stop := context.WithCancel(ctx)
+	errs := make(chan error, 2)
+	go func() {
+		errs <- (&Scorer{Repo: ai, Analyzer: an, Bus: bus, Workers: 2, BackfillEvery: 200 * time.Millisecond}).Run(runCtx, rawCons)
+	}()
+	go func() {
+		errs <- (&Deduper{Repo: ai, Analyzer: an, Bus: bus, BackfillEvery: 200 * time.Millisecond}).Run(runCtx, scoredCons)
+	}()
+	// Items arrive on items.raw while the stages are running.
+	if err := bus.PublishRaw(ctx, "live-1", raw); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM items WHERE cluster_id IS NOT NULL`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n == len(raw) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d/%d items clustered by the running stages", n, len(raw))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	stop()
+	for range 2 {
+		select {
+		case err := <-errs:
+			if err != nil {
+				t.Errorf("stage returned %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("stage did not stop after cancel")
+		}
+	}
+	var clusters, feed int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM clusters), (SELECT count(*) FROM feed_view)`).Scan(&clusters, &feed); err != nil {
+		t.Fatal(err)
+	}
+	if clusters != 1 || feed != 1 {
+		t.Errorf("clusters=%d feed_view=%d, want 1/1", clusters, feed)
 	}
 }
