@@ -39,3 +39,26 @@ export async function navTo(page: Page, name: 'feed' | 'digests' | 'sources' | '
   const mobile = (page.viewportSize()?.width ?? 1440) < 768
   await page.getByTestId(`${mobile ? 'bnav' : 'nav'}-${name}`).click()
 }
+
+/**
+ * revealAll scrolls through the page so every scroll-revealed block
+ * (v-reveal) enters the viewport once, then returns to the top. Needed before
+ * full-page screenshots, which capture beyond the viewport.
+ */
+export async function revealAll(page: Page) {
+  await page.evaluate(async () => {
+    const step = Math.max(200, window.innerHeight * 0.6)
+    for (let y = 0; y < document.documentElement.scrollHeight; y += step) {
+      window.scrollTo(0, y)
+      await new Promise((r) => setTimeout(r, 60))
+    }
+    window.scrollTo(0, 0)
+  })
+  await expect(page.locator('[data-reveal]:not(.is-in)')).toHaveCount(0)
+  await page.waitForTimeout(900) // let the last reveal/count-up finish
+}
+
+/** feedTotal reads the real total of the feed (not the animated digits). */
+export async function feedTotal(page: Page): Promise<number> {
+  return Number(await page.getByTestId('feed-total').locator('[data-value]').getAttribute('data-value'))
+}

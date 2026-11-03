@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { navTo, trackErrors } from './helpers.ts'
+import { feedTotal, navTo, trackErrors } from './helpers.ts'
 
 // Every action of the dashboard against the real API (Postgres + NATS).
 // Mutating tests clean up after themselves (sources are deleted, settings
@@ -10,7 +10,7 @@ test.describe('feed actions', () => {
     const t = trackErrors(page)
     await page.goto('/?period=all')
     await expect(page.getByTestId('feed-card').first()).toBeVisible()
-    const total = Number((await page.getByTestId('feed-total').innerText()).replace(/\D/g, ''))
+    const total = await feedTotal(page)
 
     if ((page.viewportSize()?.width ?? 1440) < 640) {
       await expect(page.getByTestId('filter-source')).toBeHidden()
@@ -26,9 +26,11 @@ test.describe('feed actions', () => {
     await page.getByTestId('clear-filters').click()
     await expect(page).not.toHaveURL(/tag=/)
 
-    await page.getByTestId('filter-period').selectOption('all')
-    await page.getByTestId('filter-sort').selectOption('recent')
+    await page.getByTestId('filter-period-all').click()
+    await expect(page.getByTestId('filter-period-all')).toHaveAttribute('aria-pressed', 'true')
+    await page.getByTestId('filter-sort-recent').click()
     await expect(page).toHaveURL(/sort=recent/)
+    await expect(page.getByTestId('filter-sort-recent')).toHaveAttribute('aria-pressed', 'true')
     const firstSource = await page.getByTestId('filter-source').locator('option').nth(1).getAttribute('value')
     await page.getByTestId('filter-source').selectOption(firstSource!)
     await expect(page).toHaveURL(new RegExp(`source_id=${firstSource}`))
