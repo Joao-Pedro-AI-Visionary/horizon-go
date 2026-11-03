@@ -30,6 +30,7 @@ import (
 	"github.com/jpdev/horizon-go/internal/adapters/source"
 	"github.com/jpdev/horizon-go/internal/adapters/store/postgres"
 	"github.com/jpdev/horizon-go/internal/app"
+	"github.com/jpdev/horizon-go/internal/config"
 	"github.com/jpdev/horizon-go/internal/digest"
 	"github.com/jpdev/horizon-go/internal/domain"
 	"github.com/jpdev/horizon-go/internal/ingest"
@@ -47,7 +48,7 @@ func env(k, def string) string {
 
 func testDB(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	t.Helper()
-	adminDSN := env("DATABASE_URL", "postgres://horizon:horizon@localhost:5450/horizon?sslmode=disable")
+	adminDSN := config.DatabaseURL()
 	admin, err := sql.Open("pgx", adminDSN)
 	if err != nil {
 		t.Fatal(err)

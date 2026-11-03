@@ -127,9 +127,9 @@ go run ./cmd/api               # :8080
 .\scripts\dev.ps1              # Vite em http://localhost:5173 (proxy de /api para :8080)
 ```
 
-O WSL repassa as portas publicadas para `localhost` do Windows, então o DSN padrão
-`postgres://horizon:horizon@localhost:5450/horizon?sslmode=disable` e `nats://localhost:4230`
-funcionam sem configuração. Variáveis: `DATABASE_URL`, `NATS_URL`, `API_ADDR`, `CORS_ORIGINS`,
+O WSL repassa as portas publicadas para `localhost` do Windows, então o Postgres do container
+de dev (usuário/senha/banco `horizon`, porta 5450; ver `.env.example`) e `nats://localhost:4230`
+funcionam sem configuração. Variáveis: `DATABASE_URL` (ou `PGUSER`/`PGPASSWORD`/`PGHOST`/`PGPORT`/`PGDATABASE`), `NATS_URL`, `API_ADDR`, `CORS_ORIGINS`,
 `OLLAMA_URL`, `LLM_MODEL`, `EMBED_MODEL`, `LLM_NUM_CTX`, `SCORE_WORKERS`.
 
 ## Como rodar via docker-compose (Linux/macOS)

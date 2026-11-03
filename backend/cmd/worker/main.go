@@ -36,6 +36,7 @@ import (
 	"github.com/jpdev/horizon-go/internal/adapters/llm/ollama"
 	"github.com/jpdev/horizon-go/internal/adapters/store/postgres"
 	"github.com/jpdev/horizon-go/internal/app"
+	"github.com/jpdev/horizon-go/internal/config"
 	"github.com/jpdev/horizon-go/internal/digest"
 	"github.com/jpdev/horizon-go/internal/domain"
 	"github.com/jpdev/horizon-go/internal/enrich"
@@ -43,7 +44,6 @@ import (
 )
 
 const (
-	defaultDSN  = "postgres://horizon:horizon@localhost:5450/horizon?sslmode=disable"
 	defaultNATS = "nats://localhost:4230"
 )
 
@@ -139,7 +139,7 @@ func newAIStages(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, bus 
 }
 
 func run(ctx context.Context, log *slog.Logger, once, seed bool, window, timeout, interval time.Duration, withDigest bool, o aiOptions) error {
-	pool, err := postgres.Connect(ctx, getenv("DATABASE_URL", defaultDSN))
+	pool, err := postgres.Connect(ctx, config.DatabaseURL())
 	if err != nil {
 		return fmt.Errorf("postgres: %w", err)
 	}

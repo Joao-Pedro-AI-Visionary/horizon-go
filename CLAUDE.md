@@ -14,7 +14,7 @@ Projeto: reescrita em Go + Vue 3 do Thysrael/Horizon (MIT). Leia `PLANO.md`. O c
 - IA: Ollama local em http://localhost:11434 — LLM `qwen3:14b` (use `"think": false` / formato json), embeddings `nomic-embed-text` (768 dims). Nunca invente chave de API.
 
 ## Infra local (já rodando, docker no WSL)
-- Postgres+pgvector: `postgres://horizon:horizon@localhost:5450/horizon?sslmode=disable`
+- Postgres+pgvector: localhost:5450, usuário/senha/banco `horizon` (credencial de dev do container; ver `.env.example`, DSN montado em `backend/internal/config`)
 - NATS JetStream: `nats://localhost:4230` (monitor 8230)
 - Go: `%LOCALAPPDATA%\Programs\go\bin\go.exe` (go1.27). Node 24. Shell: PowerShell no Windows.
 

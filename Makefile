@@ -1,7 +1,7 @@
 # Unix-like alternative to scripts/*.ps1 (Windows users: use the PowerShell scripts).
 GO ?= go
-DATABASE_URL ?= postgres://horizon:horizon@localhost:5450/horizon?sslmode=disable
-export DATABASE_URL
+# DATABASE_URL (or PGUSER/PGPASSWORD/PGHOST/PGPORT/PGDATABASE) is optional:
+# the Go commands default to the local dev container. See .env.example.
 
 .PHONY: migrate dev test e2e
 

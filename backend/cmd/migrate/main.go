@@ -1,7 +1,7 @@
 // Command migrate applies the embedded goose migrations.
 //
 // Usage: migrate [up|down|status|version|reset] (default: up)
-// DSN comes from DATABASE_URL.
+// DSN comes from DATABASE_URL (or the PG* parts; see internal/config).
 package main
 
 import (
@@ -11,16 +11,12 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/jpdev/horizon-go/internal/config"
 	"github.com/jpdev/horizon-go/migrations"
 )
 
-const defaultDSN = "postgres://horizon:horizon@localhost:5450/horizon?sslmode=disable"
-
 func main() {
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		dsn = defaultDSN
-	}
+	dsn := config.DatabaseURL()
 	cmd := "up"
 	if len(os.Args) > 1 {
 		cmd = os.Args[1]

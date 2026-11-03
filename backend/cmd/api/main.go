@@ -2,7 +2,8 @@
 //
 // Environment (defaults from CLAUDE.md):
 //
-//	DATABASE_URL    postgres://horizon:horizon@localhost:5450/horizon?sslmode=disable
+//	DATABASE_URL    full DSN; or PGUSER/PGPASSWORD/PGHOST/PGPORT/PGDATABASE
+//	                (defaults: local dev container, see .env.example)
 //	NATS_URL        nats://localhost:4230
 //	API_ADDR        :8080
 //	CORS_ORIGINS    http://localhost:5173,http://127.0.0.1:5173 (comma separated)
@@ -30,6 +31,7 @@ import (
 	"github.com/jpdev/horizon-go/internal/adapters/source"
 	"github.com/jpdev/horizon-go/internal/adapters/store/postgres"
 	"github.com/jpdev/horizon-go/internal/app"
+	"github.com/jpdev/horizon-go/internal/config"
 	"github.com/jpdev/horizon-go/internal/digest"
 	"github.com/jpdev/horizon-go/internal/domain"
 	"github.com/jpdev/horizon-go/internal/ingest"
@@ -60,7 +62,7 @@ func main() {
 }
 
 func run(ctx context.Context, log *slog.Logger) error {
-	pool, err := postgres.Connect(ctx, getenv("DATABASE_URL", "postgres://horizon:horizon@localhost:5450/horizon?sslmode=disable"))
+	pool, err := postgres.Connect(ctx, config.DatabaseURL())
 	if err != nil {
 		return err
 	}

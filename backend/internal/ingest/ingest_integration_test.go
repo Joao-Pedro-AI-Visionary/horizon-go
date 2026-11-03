@@ -28,14 +28,14 @@ import (
 	"github.com/jpdev/horizon-go/internal/adapters/source"
 	"github.com/jpdev/horizon-go/internal/adapters/store/postgres"
 	"github.com/jpdev/horizon-go/internal/app"
+	"github.com/jpdev/horizon-go/internal/config"
 	"github.com/jpdev/horizon-go/internal/domain"
 	"github.com/jpdev/horizon-go/migrations"
 )
 
 const (
-	defaultAdminDSN = "postgres://horizon:horizon@localhost:5450/horizon?sslmode=disable"
-	defaultNATS     = "nats://localhost:4230"
-	testDBName      = "horizon_test"
+	defaultNATS = "nats://localhost:4230"
+	testDBName  = "horizon_test"
 )
 
 func env(k, def string) string {
@@ -54,7 +54,7 @@ func randHex(n int) string {
 // testDB creates horizon_test if needed, migrates it and empties it.
 func testDB(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	t.Helper()
-	adminDSN := env("DATABASE_URL", defaultAdminDSN)
+	adminDSN := config.DatabaseURL()
 	admin, err := sql.Open("pgx", adminDSN)
 	if err != nil {
 		t.Fatal(err)
