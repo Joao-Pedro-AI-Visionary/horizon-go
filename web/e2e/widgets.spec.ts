@@ -84,9 +84,22 @@ test.describe('date scrubber', () => {
     await expect(page).not.toHaveURL(/period=/)
     await expect(page.getByTestId('scrub-active')).toBeVisible()
     await expect(page.getByTestId('filter-period-pill')).toHaveCSS('opacity', '0')
+    await expect(page).toHaveURL(/to=/) // closed range: same rows as the histogram
     // The histogram and the feed agree on the number of items in the range.
+    // The suite collected fresh items earlier (actions spec), so it is not 0 == 0.
     const counted = num(await page.getByTestId('scrub-count').innerText())
+    expect(counted).toBeGreaterThan(0)
+    const bars = await page.getByTestId('scrub-bar').evaluateAll((els) => els.slice(23).reduce((s, el) => s + Number(el.getAttribute('data-count')), 0))
+    expect(counted).toBe(bars)
     await expect.poll(() => feedTotalOrZero(page)).toBe(counted)
+
+    // Keys that return to where the gesture started do not change the range.
+    const url = page.url()
+    await from.focus()
+    await page.keyboard.press('ArrowLeft')
+    await page.keyboard.press('ArrowRight')
+    await page.waitForTimeout(700)
+    expect(page.url()).toBe(url)
 
     // Primary action on the yellow surface: black button clears the range.
     await expect(page.getByTestId('scrub-clear')).toHaveCSS('background-color', 'rgb(11, 11, 11)')
@@ -121,10 +134,65 @@ test.describe('date scrubber', () => {
 
     // The range change keeps the scroll position (query-only navigation).
     expect((await track.boundingBox())!.y).toBeCloseTo(box.y, 0)
+    // A plain click on a handle (no drag) changes nothing.
+    const url = page.url()
+    for (const id of ['scrub-to', 'scrub-from'] as const) {
+      const before = await page.getByTestId(id).getAttribute('aria-valuenow')
+      const tb = (await page.getByTestId(id).boundingBox())!
+      await page.mouse.click(tb.x + tb.width / 2, y)
+      await expect(page.getByTestId(id)).toHaveAttribute('aria-valuenow', before!)
+    }
+    await page.waitForTimeout(300)
+    expect(page.url()).toBe(url)
+    expect(end).toBeLessThan(29)
     // Single-pointer alternative: a tap right of the range moves the end there.
     await page.mouse.click(box.x + box.width * 0.85, y)
     await expect.poll(async () => Number(await page.getByTestId('scrub-to').getAttribute('aria-valuenow'))).toBeGreaterThan(end)
     await expect(page.getByTestId('scrub-active')).toBeVisible()
+    t.assertClean()
+  })
+
+  test('deep link starting before the window shows the real start, not day 1', async ({ page }) => {
+    const t = trackErrors(page)
+    const from = new Date(Date.now() - 60 * 24 * 3600 * 1000)
+    await page.goto(`/?from=${encodeURIComponent(from.toISOString())}`)
+    await expect(page.getByTestId('scrub-bar')).toHaveCount(30)
+    const tz = (await (await page.request.get('/api/feed/timeline')).json()).timezone as string
+    const [, m, d] = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(from).split('-')
+    await expect(page.getByTestId('scrub-label')).toContainText(`${d} `)
+    await expect(page.getByTestId('scrubber')).toContainText('início antes da janela')
+    await expect(page.getByTestId('scrub-count')).toHaveCount(0)
+    expect(Number(m)).toBeGreaterThan(0)
+    t.assertClean()
+  })
+
+  test('changing a filter on page 2 keeps the scroll position', async ({ page }) => {
+    const t = trackErrors(page)
+    await page.goto('/?period=all&page=2')
+    await expect(page.getByTestId('feed-card').first()).toBeVisible()
+    // Instant scroll to the filters (wheel scrolling is smooth on mobile and
+    // would still be moving when the position is read).
+    await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="filters-toggle"]')!
+      window.scrollTo({ top: el.getBoundingClientRect().top + window.scrollY - 200, behavior: 'instant' })
+    })
+    await expect.poll(async () => {
+      const a = await page.evaluate(() => window.scrollY)
+      await page.waitForTimeout(150)
+      return a === (await page.evaluate(() => window.scrollY))
+    }).toBe(true)
+    expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0)
+    // What the user sees must not jump: the toggle keeps its place on screen
+    // (scrollY itself may move when the browser anchors content above it).
+    const onScreen = () => page.getByTestId('filters-toggle').evaluate((el) => el.getBoundingClientRect().top)
+    const y0 = await onScreen()
+    // Keyboard activation, so the test runner does not scroll to the button itself.
+    await page.getByTestId('filter-sort-recent').evaluate((el) => (el as HTMLElement).focus({ preventScroll: true }))
+    await page.keyboard.press('Enter')
+    await expect(page).toHaveURL(/sort=recent/)
+    await expect(page).not.toHaveURL(/page=2/)
+    await page.waitForTimeout(500)
+    expect(Math.abs((await onScreen()) - y0)).toBeLessThan(2)
     t.assertClean()
   })
 })
