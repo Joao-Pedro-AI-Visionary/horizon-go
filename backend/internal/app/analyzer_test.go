@@ -224,3 +224,47 @@ func TestSameEventNoDuplicates(t *testing.T) {
 		t.Fatalf("got %v, %v", got, err)
 	}
 }
+
+func TestParseAnalysisRejectsNonFiniteAndWrapsInvalid(t *testing.T) {
+	for _, raw := range []string{`{"score": "NaN", "reason": "r", "summary": "s"}`, `{"score": "+Inf"}`, `nope`} {
+		_, err := ParseAnalysis(raw)
+		if err == nil || !errors.Is(err, ErrInvalidOutput) {
+			t.Errorf("%s: err = %v, want ErrInvalidOutput", raw, err)
+		}
+	}
+}
+
+func TestAnalyzeTransportErrorIsNotInvalidOutput(t *testing.T) {
+	llm := &fakeLLM{errs: []error{errors.New("connection refused"), errors.New("connection refused"), errors.New("connection refused")}, answers: []string{"x"}}
+	a := &Analyzer{LLM: llm, Retry: fastRetry}
+	_, err := a.Analyze(context.Background(), ScoreInput{Title: "T"})
+	if err == nil || errors.Is(err, ErrInvalidOutput) {
+		t.Fatalf("outage must not count as invalid output: %v", err)
+	}
+}
+
+func TestEmbedRejectsWrongDimsWithoutCaching(t *testing.T) {
+	emb := &fakeEmbedder{vec: []float32{0.1, 0.2}}
+	cache := &memCache{}
+	a := &Analyzer{Embedder: emb, Cache: cache, Retry: fastRetry, Dims: 768}
+	_, err := a.Embed(context.Background(), "hello")
+	if err == nil || !retry.IsPermanent(err) {
+		t.Fatalf("wrong dims must be a permanent error: %v", err)
+	}
+	if emb.calls != 1 || len(cache.m) != 0 {
+		t.Errorf("calls=%d cached=%d, want 1 call and nothing cached", emb.calls, len(cache.m))
+	}
+}
+
+func TestScoreCacheKeyIncludesAuthor(t *testing.T) {
+	llm := &fakeLLM{answers: []string{`{"score": 6, "reason": "r", "summary": "s"}`}}
+	a := &Analyzer{LLM: llm, Cache: &memCache{}, Retry: fastRetry}
+	for _, author := range []string{"alice", "bob"} {
+		if _, err := a.Analyze(context.Background(), ScoreInput{Title: "T", Author: author}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(llm.calls) != 2 {
+		t.Errorf("different authors must not share a cached analysis, calls = %d", len(llm.calls))
+	}
+}

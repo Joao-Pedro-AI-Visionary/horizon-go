@@ -1,4 +1,4 @@
-// Package retry runs a call with exponential backoff and full jitter.
+// Package retry runs a call with exponential backoff and equal jitter.
 package retry
 
 import (
@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Policy is exponential backoff with full jitter.
+// Policy is exponential backoff with equal jitter (delay/2 + rand(delay/2)).
 type Policy struct {
 	Attempts int           // total calls, including the first
 	Base     time.Duration // delay before the second call

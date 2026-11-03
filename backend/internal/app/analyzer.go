@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -149,6 +150,10 @@ Content:
 	return scoringSystem, user
 }
 
+// ErrInvalidOutput wraps model answers that break the output contract. Only
+// these spend an item's scoring attempts; outages and config errors do not.
+var ErrInvalidOutput = errors.New("invalid model output")
+
 var errNoJSON = errors.New("no JSON object in model output")
 
 // extractJSON returns the outermost {...} of s (models sometimes wrap it).
@@ -160,8 +165,21 @@ func extractJSON(s string) (string, error) {
 	return s[i : j+1], nil
 }
 
-// ParseAnalysis validates the scorer output contract.
+func invalid(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %w", ErrInvalidOutput, err)
+}
+
+// ParseAnalysis validates the scorer output contract. Errors wrap
+// ErrInvalidOutput.
 func ParseAnalysis(raw string) (domain.Analysis, error) {
+	a, err := parseAnalysis(raw)
+	return a, invalid(err)
+}
+
+func parseAnalysis(raw string) (domain.Analysis, error) {
 	body, err := extractJSON(raw)
 	if err != nil {
 		return domain.Analysis{}, err
@@ -182,6 +200,9 @@ func ParseAnalysis(raw string) (domain.Analysis, error) {
 	score, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
 	if err != nil {
 		return domain.Analysis{}, fmt.Errorf("analysis: score %q is not a number", s)
+	}
+	if math.IsNaN(score) || math.IsInf(score, 0) {
+		return domain.Analysis{}, fmt.Errorf("analysis: score %v is not finite", score)
 	}
 	if err := domain.ValidateScore(score); err != nil {
 		return domain.Analysis{}, fmt.Errorf("analysis: score %v: %w", score, err)
@@ -212,7 +233,9 @@ type Analyzer struct {
 	LLM      ports.LLM
 	Embedder ports.Embedder
 	Cache    ports.AICache // optional
-	Retry    retry.Policy
+	// Dims is the expected embedding size (the vector column); 0 skips the check.
+	Dims  int
+	Retry retry.Policy
 }
 
 func (a *Analyzer) policy() retry.Policy {
@@ -242,9 +265,10 @@ func (a *Analyzer) store(ctx context.Context, kind, key, model string, v any) {
 	}
 }
 
-// Analyze scores one item. Invalid model output counts as a failed attempt.
+// Analyze scores one item. Invalid model output is retried and, when it
+// persists, returned wrapping ErrInvalidOutput.
 func (a *Analyzer) Analyze(ctx context.Context, in ScoreInput) (domain.Analysis, error) {
-	key := domain.ContentHash(PromptVersion, a.LLM.Model(), in.Title, in.URL, in.Source, in.Content)
+	key := domain.ContentHash(PromptVersion, a.LLM.Model(), in.Title, in.URL, in.Source, in.Author, in.Content)
 	var out domain.Analysis
 	if a.cached(ctx, "score", key, &out) {
 		return out, nil
@@ -279,7 +303,7 @@ func EmbeddingText(title, summary string) string {
 func (a *Analyzer) Embed(ctx context.Context, text string) ([]float32, error) {
 	key := domain.ContentHash(a.Embedder.Model(), text)
 	var out []float32
-	if a.cached(ctx, "embed", key, &out) && len(out) > 0 {
+	if a.cached(ctx, "embed", key, &out) && len(out) > 0 && (a.Dims == 0 || len(out) == a.Dims) {
 		return out, nil
 	}
 	err := retry.Do(ctx, a.policy(), func(ctx context.Context) error {
@@ -289,6 +313,9 @@ func (a *Analyzer) Embed(ctx context.Context, text string) ([]float32, error) {
 		}
 		if len(vs) != 1 || len(vs[0]) == 0 {
 			return fmt.Errorf("embedder returned %d vectors", len(vs))
+		}
+		if a.Dims > 0 && len(vs[0]) != a.Dims {
+			return retry.Permanent(fmt.Errorf("embedder %s returned %d dims, want %d", a.Embedder.Model(), len(vs[0]), a.Dims))
 		}
 		out = vs[0]
 		return nil
@@ -347,13 +374,13 @@ func (a *Analyzer) SameEvent(ctx context.Context, target DedupCandidate, cands [
 			}
 			body, err := extractJSON(raw)
 			if err != nil {
-				return err
+				return invalid(err)
 			}
 			var v struct {
 				Duplicates [][]any `json:"duplicates"`
 			}
 			if err := json.Unmarshal([]byte(body), &v); err != nil {
-				return fmt.Errorf("decode dedup: %w", err)
+				return invalid(fmt.Errorf("decode dedup: %w", err))
 			}
 			groups = v.Duplicates
 			return nil
