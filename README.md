@@ -4,7 +4,9 @@ Agregador de notícias tech com nota por LLM, dedup semântico (pgvector) e dige
 diário. Reescrita em **Go + Vue 3** do [Horizon](https://github.com/Thysrael/Horizon)
 de Thysrael (MIT). Plano completo em [`PLANO.md`](PLANO.md).
 
-> Status: **Fase 0** — monorepo, migrations e tooling. Pipeline, API e telas chegam nas fases 1–4.
+> Status: **Fase 4** — pipeline, API REST e dashboard Vue (5 telas) prontos. Detalhes do front,
+> decisões de design e referências do Dribbble em [`web/README.md`](web/README.md);
+> screenshots em [`docs/screenshots/`](docs/screenshots).
 
 ## Estrutura
 
@@ -19,7 +21,7 @@ backend/                 módulo Go github.com/jpdev/horizon-go (hexagonal)
   internal/app           casos de uso / orquestração
   migrations/            SQL goose: vector, sources, items (vector(768)), clusters,
                          digests, feed_view (projeção CQRS), índices HNSW
-web/                     Vue 3 + Vite + TS + Pinia + Vue Router + Tailwind v4 + Playwright
+web/                     dashboard Vue 3 + Vite + TS + Pinia + Vue Router + Tailwind v4 + Playwright
 scripts/*.ps1            dev, test, e2e, migrate (Windows / PowerShell)
 Makefile                 mesmos alvos para Unix
 docker-compose.yml       alternativa: pgvector pg16 + NATS JetStream
