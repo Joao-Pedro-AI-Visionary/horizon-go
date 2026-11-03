@@ -74,6 +74,9 @@ func Connect(ctx context.Context, cfg Config) (*Bus, error) {
 	return &Bus{nc: nc, js: js, stream: cfg.Stream, prefix: cfg.SubjectPrefix}, nil
 }
 
+// Ping round-trips to the server.
+func (b *Bus) Ping(ctx context.Context) error { return b.nc.FlushWithContext(ctx) }
+
 // Close drains the connection.
 func (b *Bus) Close() { _ = b.nc.Drain() }
 

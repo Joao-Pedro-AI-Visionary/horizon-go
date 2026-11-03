@@ -3,6 +3,7 @@ module github.com/jpdev/horizon-go
 go 1.26.0
 
 require (
+	github.com/go-chi/chi/v5 v5.5.0
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/mmcdole/gofeed v1.5.0
 	github.com/nats-io/nats.go v1.55.0

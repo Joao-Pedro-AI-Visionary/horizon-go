@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jpdev/horizon-go/internal/domain"
 	"github.com/jpdev/horizon-go/internal/ports"
 	"github.com/jpdev/horizon-go/internal/retry"
 )
@@ -37,16 +38,20 @@ type Config struct {
 	Temperature float64
 	NumCtx      int
 	Client      *http.Client
+	// OnUsage, when set, receives the token counts of every successful call
+	// (prompt_eval_count / eval_count).
+	OnUsage func(ctx context.Context, u domain.TokenUsage)
 }
 
 // Client talks to one Ollama server.
 type Client struct {
-	base   string
-	chat   string
-	embed  string
-	temp   float64
-	numCtx int
-	client *http.Client
+	base    string
+	chat    string
+	embed   string
+	temp    float64
+	numCtx  int
+	client  *http.Client
+	onUsage func(context.Context, domain.TokenUsage)
 }
 
 var (
@@ -57,12 +62,13 @@ var (
 // New fills defaults and returns a client.
 func New(cfg Config) *Client {
 	c := &Client{
-		base:   strings.TrimRight(cfg.URL, "/"),
-		chat:   cfg.ChatModel,
-		embed:  cfg.EmbedModel,
-		temp:   cfg.Temperature,
-		numCtx: cfg.NumCtx,
-		client: cfg.Client,
+		base:    strings.TrimRight(cfg.URL, "/"),
+		chat:    cfg.ChatModel,
+		embed:   cfg.EmbedModel,
+		temp:    cfg.Temperature,
+		numCtx:  cfg.NumCtx,
+		client:  cfg.Client,
+		onUsage: cfg.OnUsage,
 	}
 	if c.base == "" {
 		c.base = DefaultURL
@@ -145,8 +151,16 @@ type chatRequest struct {
 }
 
 type chatResponse struct {
-	Message message `json:"message"`
-	Done    bool    `json:"done"`
+	Message         message `json:"message"`
+	Done            bool    `json:"done"`
+	PromptEvalCount int     `json:"prompt_eval_count"`
+	EvalCount       int     `json:"eval_count"`
+}
+
+func (c *Client) usage(ctx context.Context, kind, model string, prompt, completion int) {
+	if c.onUsage != nil {
+		c.onUsage(ctx, domain.TokenUsage{Kind: kind, Model: model, PromptTokens: prompt, CompletionTokens: completion})
+	}
 }
 
 // Model is the chat model name.
@@ -171,6 +185,7 @@ func (m *Chat) Chat(ctx context.Context, req ports.ChatRequest) (string, error) 
 	if err := m.c.post(ctx, "/api/chat", body, &out); err != nil {
 		return "", err
 	}
+	m.c.usage(ctx, "chat", m.c.chat, out.PromptEvalCount, out.EvalCount)
 	if strings.TrimSpace(out.Message.Content) == "" {
 		return "", fmt.Errorf("ollama /api/chat: empty response")
 	}
@@ -183,7 +198,8 @@ type embedRequest struct {
 }
 
 type embedResponse struct {
-	Embeddings [][]float32 `json:"embeddings"`
+	Embeddings      [][]float32 `json:"embeddings"`
+	PromptEvalCount int         `json:"prompt_eval_count"`
 }
 
 // Model is the embedding model name.
@@ -195,6 +211,7 @@ func (m *Embed) Embed(ctx context.Context, texts []string) ([][]float32, error) 
 	if err := m.c.post(ctx, "/api/embed", embedRequest{Model: m.c.embed, Input: texts}, &out); err != nil {
 		return nil, err
 	}
+	m.c.usage(ctx, "embed", m.c.embed, out.PromptEvalCount, 0)
 	if len(out.Embeddings) != len(texts) {
 		return nil, fmt.Errorf("ollama /api/embed: %d vectors for %d inputs", len(out.Embeddings), len(texts))
 	}

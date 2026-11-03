@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/jpdev/horizon-go/internal/domain"
 	"github.com/jpdev/horizon-go/internal/ports"
 	"github.com/jpdev/horizon-go/internal/retry"
 )
@@ -88,5 +89,31 @@ func TestEmbedCountMismatch(t *testing.T) {
 	defer srv.Close()
 	if _, err := New(Config{URL: srv.URL}).Embedder().Embed(context.Background(), []string{"a", "b"}); err == nil {
 		t.Fatal("want error on vector count mismatch")
+	}
+}
+
+func TestUsageIsReported(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/chat" {
+			w.Write([]byte(`{"message":{"role":"assistant","content":"ok"},"done":true,"prompt_eval_count":120,"eval_count":35}`))
+			return
+		}
+		w.Write([]byte(`{"embeddings":[[0.1]],"prompt_eval_count":9}`))
+	}))
+	defer srv.Close()
+	var got []domain.TokenUsage
+	c := New(Config{URL: srv.URL, OnUsage: func(_ context.Context, u domain.TokenUsage) { got = append(got, u) }})
+	if _, err := c.LLM().Chat(context.Background(), ports.ChatRequest{User: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Embedder().Embed(context.Background(), []string{"a"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []domain.TokenUsage{
+		{Kind: "chat", Model: DefaultChatModel, PromptTokens: 120, CompletionTokens: 35},
+		{Kind: "embed", Model: DefaultEmbedModel, PromptTokens: 9},
+	}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("usage = %+v", got)
 	}
 }

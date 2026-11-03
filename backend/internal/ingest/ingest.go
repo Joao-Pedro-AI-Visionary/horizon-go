@@ -70,6 +70,19 @@ func (p *Pipeline) Collect(ctx context.Context, since time.Time) (app.Report, er
 	return p.Collector.Run(ctx, jobs, since)
 }
 
+// CollectSource runs the collector over one source, enabled or not.
+func (p *Pipeline) CollectSource(ctx context.Context, id int64, since time.Time) (app.Report, error) {
+	row, err := p.Sources.Get(ctx, id)
+	if err != nil {
+		return app.Report{}, err
+	}
+	s, err := source.Build(row, p.Client, p.BaseURLs)
+	if err != nil {
+		s = brokenSource{name: row.Name, err: err}
+	}
+	return p.Collector.Run(ctx, []app.Job{{SourceID: row.ID, Source: s}}, since)
+}
+
 // Once collects, then drains the consumer so every published item is in
 // Postgres when it returns.
 func (p *Pipeline) Once(ctx context.Context, since time.Time) (Result, error) {
