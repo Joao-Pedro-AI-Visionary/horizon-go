@@ -33,6 +33,14 @@ services:
         sync: false
       - key: SESSION_SECRET # HMAC key of the 12 h sessions (32+ chars)
         sync: false
+      - key: RESEND_API_KEY # "esqueci minha senha" e-mail
+        sync: false
+      - key: RESET_EMAIL_TO # the only recipient of the reset link
+        sync: false
+      - key: RESET_FROM
+        value: Horizon <onboarding@resend.dev>
+      - key: FRONT_URL
+        value: https://horizon-web-eight.vercel.app
       - key: HORIZON_ENV
         value: production
       # --- models ---

@@ -97,6 +97,8 @@ type Server struct {
 	RequireAdmin bool
 	// Login enables POST /api/auth/login (username + password -> session).
 	Login *Login
+	// Reset, when set, enables the "esqueci minha senha" e-mail.
+	Reset *PasswordReset
 	Log   *slog.Logger
 
 	collecting  sync.Mutex
@@ -127,6 +129,8 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/auth/me", s.me)
 		r.Post("/auth/login", s.login)
 		r.Post("/auth/logout", s.logout)
+		r.Post("/auth/forgot", s.forgot)
+		r.Post("/auth/reset", s.reset)
 		r.Post("/auth/check", s.authCheck)
 		r.Get("/feed", s.feed)
 		r.Get("/feed/timeline", s.feedTimeline)

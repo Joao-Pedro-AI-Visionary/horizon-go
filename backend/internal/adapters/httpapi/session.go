@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -22,11 +23,75 @@ import (
 // sends as "Authorization: Bearer". Bearer, not cookies: the dashboard
 // (Vercel) and the API (Render) are different sites, and third-party
 // cookies are blocked by browsers.
+//
+// The password is PasswordHash (ADMIN_PASSWORD_HASH) until a reset stores a
+// new hash in the database (Creds); from then on the database wins. Every
+// reset bumps a session version, so tokens issued before it stop working.
 type Login struct {
 	Username     string
-	PasswordHash []byte // bcrypt
+	PasswordHash []byte // bcrypt, from the environment
 	Sessions     *Sessions
 	Limiter      *LoginLimiter
+	// Creds, when set, holds the hash saved by a password reset.
+	Creds CredentialStore
+
+	mu      sync.RWMutex
+	dbHash  []byte // nil = use PasswordHash
+	version int
+}
+
+// Load reads the stored credential (if any). Call it at startup and before a
+// login check; on error the last known values are kept.
+func (l *Login) Load(ctx context.Context) error {
+	if l == nil || l.Creds == nil {
+		return nil
+	}
+	c, found, err := l.Creds.GetCredential(ctx, l.Username)
+	if err != nil {
+		return err
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if found {
+		l.dbHash, l.version = []byte(c.PasswordHash), c.SessionVersion
+	} else {
+		l.dbHash, l.version = nil, 0
+	}
+	return nil
+}
+
+func (l *Login) current() ([]byte, int) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if l.dbHash != nil {
+		return l.dbHash, l.version
+	}
+	return l.PasswordHash, l.version
+}
+
+// set is called after a successful reset.
+func (l *Login) set(hash []byte, version int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.dbHash, l.version = hash, version
+}
+
+// Issue signs a session for the admin at the current version.
+func (l *Login) Issue() (string, time.Time) {
+	_, v := l.current()
+	return l.Sessions.IssueVersion(l.Username, v)
+}
+
+// Verify checks a session token, including its version.
+func (l *Login) Verify(tok string) (string, time.Time, error) {
+	sub, exp, v, err := l.Sessions.verify(tok)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	if _, cur := l.current(); v != cur {
+		return "", time.Time{}, errBadSession
+	}
+	return sub, exp, nil
 }
 
 // Enabled reports whether login is configured.
@@ -40,7 +105,7 @@ var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("horizon-dummy-password"),
 // Check compares the username in constant time and the password with bcrypt.
 func (l *Login) Check(username, password string) bool {
 	userOK := subtle.ConstantTimeCompare([]byte(username), []byte(l.Username)) == 1
-	hash := l.PasswordHash
+	hash, _ := l.current()
 	if !userOK {
 		hash = dummyHash
 	}
@@ -63,6 +128,7 @@ type sessionClaims struct {
 	Sub string `json:"sub"`
 	Iat int64  `json:"iat"`
 	Exp int64  `json:"exp"`
+	Ver int    `json:"ver,omitempty"`
 }
 
 var b64 = base64.RawURLEncoding
@@ -88,38 +154,47 @@ func (s *Sessions) sign(payload string) string {
 }
 
 // Issue returns a token for sub and its expiry.
-func (s *Sessions) Issue(sub string) (string, time.Time) {
+func (s *Sessions) Issue(sub string) (string, time.Time) { return s.IssueVersion(sub, 0) }
+
+// IssueVersion returns a token for sub at a session version.
+func (s *Sessions) IssueVersion(sub string, ver int) (string, time.Time) {
 	now := s.now()
 	exp := now.Add(s.ttl())
-	raw, _ := json.Marshal(sessionClaims{Sub: sub, Iat: now.Unix(), Exp: exp.Unix()})
+	raw, _ := json.Marshal(sessionClaims{Sub: sub, Iat: now.Unix(), Exp: exp.Unix(), Ver: ver})
 	payload := b64.EncodeToString(raw)
 	return payload + "." + s.sign(payload), exp
 }
 
 var errBadSession = errors.New("invalid or expired session")
 
-// Verify checks the signature and expiry and returns the subject and expiry.
+// Verify checks the signature and expiry and returns the subject and expiry
+// (the session version is checked by Login.Verify).
 func (s *Sessions) Verify(token string) (string, time.Time, error) {
+	sub, exp, _, err := s.verify(token)
+	return sub, exp, err
+}
+
+func (s *Sessions) verify(token string) (string, time.Time, int, error) {
 	payload, sig, ok := strings.Cut(token, ".")
 	if !ok || payload == "" || sig == "" || len(s.Secret) == 0 {
-		return "", time.Time{}, errBadSession
+		return "", time.Time{}, 0, errBadSession
 	}
 	if !hmac.Equal([]byte(sig), []byte(s.sign(payload))) {
-		return "", time.Time{}, errBadSession
+		return "", time.Time{}, 0, errBadSession
 	}
 	raw, err := b64.DecodeString(payload)
 	if err != nil {
-		return "", time.Time{}, errBadSession
+		return "", time.Time{}, 0, errBadSession
 	}
 	var c sessionClaims
 	if err := json.Unmarshal(raw, &c); err != nil || c.Sub == "" {
-		return "", time.Time{}, errBadSession
+		return "", time.Time{}, 0, errBadSession
 	}
 	exp := time.Unix(c.Exp, 0)
 	if !s.now().Before(exp) {
-		return "", time.Time{}, errBadSession
+		return "", time.Time{}, 0, errBadSession
 	}
-	return c.Sub, exp, nil
+	return c.Sub, exp, c.Ver, nil
 }
 
 // LoginLimiter allows Max failed attempts per IP within Window; beyond that
@@ -241,6 +316,9 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	if err := s.Login.Load(r.Context()); err != nil {
+		s.log().Warn("login: stored credential unavailable, using the last known", "err", err)
+	}
 	if len(in.Username) > 200 || len(in.Password) > 200 || !s.Login.Check(strings.TrimSpace(in.Username), in.Password) {
 		s.Login.Limiter.Fail(ip)
 		s.log().Warn("login failed", "ip", ip)
@@ -248,7 +326,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Login.Limiter.Succeed(ip)
-	token, exp := s.Login.Sessions.Issue(s.Login.Username)
+	token, exp := s.Login.Issue()
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{"token": token, "username": s.Login.Username, "expires_at": exp.UTC()})
 }
@@ -257,7 +335,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	tok, ok := bearer(r)
 	if ok && s.Login.Enabled() {
-		if sub, exp, err := s.Login.Sessions.Verify(tok); err == nil {
+		if sub, exp, err := s.Login.Verify(tok); err == nil {
 			writeJSON(w, http.StatusOK, map[string]any{"username": sub, "expires_at": exp.UTC(), "kind": "session"})
 			return
 		}

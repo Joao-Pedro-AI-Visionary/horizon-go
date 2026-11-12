@@ -18,3 +18,9 @@ type Alert struct {
 	Message  string    `json:"message"`
 	At       time.Time `json:"at"`
 }
+
+// AdminCredential is the admin password saved by a password reset.
+type AdminCredential struct {
+	PasswordHash   string
+	SessionVersion int
+}

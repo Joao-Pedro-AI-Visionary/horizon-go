@@ -54,7 +54,7 @@ func (s *Server) authorized(tok string) bool {
 		return true
 	}
 	if s.Login.Enabled() {
-		if _, _, err := s.Login.Sessions.Verify(tok); err == nil {
+		if _, _, err := s.Login.Verify(tok); err == nil {
 			return true
 		}
 	}
@@ -62,7 +62,10 @@ func (s *Server) authorized(tok string) bool {
 }
 
 // publicWrites are POSTs anyone may call (they check credentials themselves).
-var publicWrites = map[string]bool{"/api/auth/login": true, "/api/auth/logout": true}
+var publicWrites = map[string]bool{
+	"/api/auth/login": true, "/api/auth/logout": true,
+	"/api/auth/forgot": true, "/api/auth/reset": true,
+}
 
 func (s *Server) requireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

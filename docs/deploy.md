@@ -188,6 +188,24 @@ as escritas falham fechadas com `503`. Localmente, sem credenciais, tudo
 continua aberto como antes. O `GET /api/auth` público diz o modo (`open`,
 `login`, `token` ou `disabled`).
 
+### Esqueci minha senha
+
+Na página `/login`, o link "Esqueci minha senha" abre `/forgot`, com um botão
+só. `POST /api/auth/forgot` responde sempre o mesmo 200 genérico e **não
+aceita destinatário**: o link vai só pra `RESET_EMAIL_TO`, via Resend
+(`RESEND_API_KEY`, remetente `RESET_FROM`). Limites: 3 pedidos por IP a cada
+15 min e no máximo 5 e-mails por hora no total.
+
+- O link `{FRONT_URL}/reset?token=…` vale 30 min e funciona uma vez. No banco
+  fica só o sha256 do token (tabela `password_resets`).
+- `POST /api/auth/reset {token, new_password}` (10+ caracteres) grava o hash
+  bcrypt novo em `admin_credentials`. A partir daí o login usa essa senha, e
+  não mais o `ADMIN_PASSWORD_HASH`. Também sobe a `session_version`, o que
+  derruba todas as sessões abertas. O `HORIZON_ADMIN_TOKEN` das automações não
+  muda.
+- Pra voltar a usar a senha do Render: `DELETE FROM admin_credentials;` no
+  Neon.
+
 ### Trocar a senha do admin
 
 1. Gere o hash bcrypt da nova senha (12+ caracteres), na pasta `backend/`:
@@ -216,6 +234,10 @@ Veja `.env.production.example`. Resumo:
 | `ADMIN_USERNAME` | config | usuário do login do painel |
 | `ADMIN_PASSWORD_HASH` | segredo | hash bcrypt da senha (`ADMIN_PASSWORD` em texto puro é aceito como fallback) |
 | `SESSION_SECRET` | segredo | chave HMAC das sessões de 12 h (32+ caracteres) |
+| `RESEND_API_KEY` | segredo | envio do e-mail de "esqueci minha senha" (Resend) |
+| `RESET_EMAIL_TO` | config | único destinatário do link de redefinição |
+| `RESET_FROM` | config | remetente (padrão `Horizon <onboarding@resend.dev>`) |
+| `FRONT_URL` | config | URL do painel usada no link (`https://horizon-web-eight.vercel.app`) |
 | `HORIZON_ENV` | `production` | liga o fail-closed (o Render também é detectado por `RENDER`) |
 | `LLM_PROVIDER` | `groq` | `ollama` (padrão local), `groq` ou `openai` |
 | `LLM_MODEL` | `openai/gpt-oss-20b` | |

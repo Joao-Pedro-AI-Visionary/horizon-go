@@ -18,6 +18,9 @@
 //	ADMIN_PASSWORD_HASH  bcrypt hash of the password (ADMIN_PASSWORD, plain,
 //	                is accepted as a fallback and hashed at startup)
 //	SESSION_SECRET  HMAC key of the 12 h session tokens (random per boot if unset)
+//	RESEND_API_KEY, RESET_EMAIL_TO, FRONT_URL  enable "esqueci minha senha":
+//	                a 30 min single-use link to RESET_EMAIL_TO only
+//	RESET_FROM      sender (default "Horizon <onboarding@resend.dev>")
 //	HORIZON_ENV     "production" (or running on Render) refuses writes while
 //	                HORIZON_ADMIN_TOKEN is unset (fail closed)
 //
@@ -43,6 +46,7 @@ import (
 
 	"github.com/jpdev/horizon-go/internal/adapters/bus/natsbus"
 	"github.com/jpdev/horizon-go/internal/adapters/httpapi"
+	"github.com/jpdev/horizon-go/internal/adapters/mail/resend"
 	"github.com/jpdev/horizon-go/internal/adapters/source"
 	"github.com/jpdev/horizon-go/internal/adapters/store/postgres"
 	"github.com/jpdev/horizon-go/internal/app"
@@ -130,6 +134,30 @@ func loginFromEnv(lookup func(string) string, log *slog.Logger) (*httpapi.Login,
 	}, nil
 }
 
+// resetFromEnv enables "esqueci minha senha" when RESEND_API_KEY,
+// RESET_EMAIL_TO and FRONT_URL are set. The link only ever goes to
+// RESET_EMAIL_TO.
+func resetFromEnv(lookup func(string) string) *httpapi.PasswordReset {
+	key := strings.TrimSpace(lookup("RESEND_API_KEY"))
+	to := strings.TrimSpace(lookup("RESET_EMAIL_TO"))
+	front := strings.TrimSpace(lookup("FRONT_URL"))
+	if key == "" || to == "" || front == "" {
+		return nil
+	}
+	from := strings.TrimSpace(lookup("RESET_FROM"))
+	if from == "" {
+		from = "Horizon <onboarding@resend.dev>"
+	}
+	return &httpapi.PasswordReset{
+		Mailer:     &resend.Client{APIKey: key, From: from},
+		To:         to,
+		FrontURL:   front,
+		TTL:        httpapi.DefaultResetTTL,
+		Limiter:    &httpapi.LoginLimiter{Max: 3, Window: 15 * time.Minute, MaxBlock: time.Hour},
+		MaxPerHour: 5,
+	}
+}
+
 // isProduction is HORIZON_ENV=production, or a Render service (RENDER is
 // set on every Render instance).
 func isProduction(lookup func(string) string) bool {
@@ -170,6 +198,13 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	if login != nil {
+		login.Creds = postgres.CredentialRepo{DB: pool}
+		if err := login.Load(ctx); err != nil {
+			log.Warn("admin credential: database unavailable, using ADMIN_PASSWORD_HASH", "err", err)
+		}
+	}
+	reset := resetFromEnv(os.Getenv)
 	timeout := envDuration("SOURCE_TIMEOUT", app.DefaultSourceTimeout)
 	read := postgres.ReadRepo{DB: pool}
 	sources := postgres.SourceRepo{DB: pool}
@@ -197,6 +232,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		CollectCooldown: envDuration("COLLECT_COOLDOWN", 0),
 		AdminToken:      strings.TrimSpace(os.Getenv("HORIZON_ADMIN_TOKEN")),
 		Login:           login,
+		Reset:           reset,
 		RequireAdmin:    isProduction(os.Getenv),
 		Log:             log,
 	}
@@ -211,7 +247,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	errc := make(chan error, 1)
 	go func() {
 		log.Info("api listening", "addr", hs.Addr, "cors", srv.AllowedOrigins,
-			"admin_token", srv.AdminToken != "", "login", srv.Login.Enabled(), "writes_open", srv.WritesOpen())
+			"admin_token", srv.AdminToken != "", "login", srv.Login.Enabled(), "password_reset", srv.Reset.Enabled(), "writes_open", srv.WritesOpen())
 		errc <- hs.ListenAndServe()
 	}()
 	select {
