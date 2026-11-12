@@ -111,6 +111,7 @@ func (s *Server) Handler() http.Handler {
 			})
 		})
 		r.Use(s.requireAdmin)
+		r.Get("/auth", s.authStatus)
 		r.Post("/auth/check", s.authCheck)
 		r.Get("/feed", s.feed)
 		r.Get("/feed/timeline", s.feedTimeline)

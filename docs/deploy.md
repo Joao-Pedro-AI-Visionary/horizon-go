@@ -170,7 +170,8 @@ comparado em tempo constante. Sem token ou com token errado a API responde
 `401`. Em produção (`HORIZON_ENV=production` ou no Render) com o token vazio,
 as escritas falham fechadas com `503`. Localmente, sem token, tudo continua
 aberto como antes. `POST /api/auth/check` responde `204` com um token válido
-(o painel usa pra desbloquear a edição).
+(o painel usa pra desbloquear a edição) e o `GET /api/auth` público diz o modo
+(`open`, `token` ou `disabled`) sem precisar de uma chamada que falhe.
 
 ## Variáveis (referência)
 

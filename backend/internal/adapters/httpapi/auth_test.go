@@ -147,3 +147,16 @@ func TestTokenEqual(t *testing.T) {
 		t.Fatal("tokenEqual")
 	}
 }
+
+func TestAuthStatus(t *testing.T) {
+	for _, c := range []struct {
+		token   string
+		require bool
+		want    string
+	}{{"", false, "open"}, {"tok", true, "token"}, {"tok", false, "token"}, {"", true, "disabled"}} {
+		rec := doAuth(authServer(c.token, c.require), http.MethodGet, "/api/auth", "", "")
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"mode":"`+c.want+`"`) {
+			t.Errorf("%+v: got %d %s", c, rec.Code, rec.Body.String())
+		}
+	}
+}

@@ -68,3 +68,17 @@ func (s *Server) requireAdmin(next http.Handler) http.Handler {
 func (s *Server) authCheck(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// authStatus (public GET /api/auth) tells the dashboard how writes work
+// without a failed request: "open" (dev, no token needed), "token" (send the
+// admin token) or "disabled" (production without a token: writes refused).
+func (s *Server) authStatus(w http.ResponseWriter, _ *http.Request) {
+	mode := "token"
+	switch {
+	case s.WritesOpen():
+		mode = "open"
+	case s.AdminToken == "":
+		mode = "disabled"
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"mode": mode})
+}
