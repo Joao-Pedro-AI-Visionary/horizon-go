@@ -1,7 +1,9 @@
 package main
 
 import (
+	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -55,5 +57,23 @@ func TestIsProduction(t *testing.T) {
 		if got := isProduction(func(k string) string { return c.env[k] }); got != c.want {
 			t.Errorf("%v: got %v want %v", c.env, got, c.want)
 		}
+	}
+}
+
+func TestLoginFromEnv(t *testing.T) {
+	log := slog.New(slog.DiscardHandler)
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	if l, err := loginFromEnv(env(nil), log); l != nil || err != nil {
+		t.Fatalf("unset: %v %v", l, err)
+	}
+	l, err := loginFromEnv(env(map[string]string{"ADMIN_USERNAME": "joao", "ADMIN_PASSWORD": "a long enough password", "SESSION_SECRET": strings.Repeat("s", 32)}), log)
+	if err != nil || !l.Enabled() || !l.Check("joao", "a long enough password") || l.Check("joao", "nope") {
+		t.Fatalf("plain fallback: %v", err)
+	}
+	if _, err := loginFromEnv(env(map[string]string{"ADMIN_USERNAME": "joao", "ADMIN_PASSWORD_HASH": "not-bcrypt"}), log); err == nil {
+		t.Fatal("bad hash accepted")
+	}
+	if _, err := loginFromEnv(env(map[string]string{"ADMIN_USERNAME": "joao", "ADMIN_PASSWORD": "x", "SESSION_SECRET": "short"}), log); err == nil {
+		t.Fatal("short secret accepted")
 	}
 }

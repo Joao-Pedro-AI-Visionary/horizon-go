@@ -165,13 +165,42 @@ O que isso significa na prática:
 
 Leituras (`GET`) são públicas. **Toda escrita** em `/api` (`POST`, `PUT`,
 `PATCH`, `DELETE`: fontes, settings, `pipeline/run`, `sources/{id}/fetch`,
-`digests/generate`) exige `Authorization: Bearer <HORIZON_ADMIN_TOKEN>`,
-comparado em tempo constante. Sem token ou com token errado a API responde
-`401`. Em produção (`HORIZON_ENV=production` ou no Render) com o token vazio,
-as escritas falham fechadas com `503`. Localmente, sem token, tudo continua
-aberto como antes. `POST /api/auth/check` responde `204` com um token válido
-(o painel usa pra desbloquear a edição) e o `GET /api/auth` público diz o modo
-(`open`, `token` ou `disabled`) sem precisar de uma chamada que falhe.
+`digests/generate`, `items/ingest`) exige `Authorization: Bearer <token>`,
+onde o token é um destes:
+
+- **Sessão de login:** o painel tem a página `/login` (link discreto "Entrar"
+  no rodapé). `POST /api/auth/login` com `{"username","password"}` confere o
+  usuário em tempo constante e a senha com bcrypt, e devolve um token de sessão
+  assinado (HMAC-SHA256 com `SESSION_SECRET`) que vale 12 h. Ele é Bearer, não
+  cookie, porque Vercel e Render são sites diferentes e o navegador bloqueia
+  cookie de terceiros. O painel guarda o token no `sessionStorage` e sai
+  sozinho quando ele expira ou quando uma escrita volta `401`.
+  `GET /api/auth/me` valida o token.
+  - Limite: 5 tentativas erradas por minuto por IP. Depois disso o IP fica
+    bloqueado por 1 min, e cada erro seguinte dobra o bloqueio, até 15 min
+    (`429` com `Retry-After`). A mensagem de erro é sempre genérica.
+- **`HORIZON_ADMIN_TOKEN`:** token fixo das automações (o workflow 2x/dia e o
+  push do radar do X).
+
+Sem token ou com token inválido, a API responde `401`. Em produção
+(`HORIZON_ENV=production` ou no Render), sem nenhuma credencial configurada,
+as escritas falham fechadas com `503`. Localmente, sem credenciais, tudo
+continua aberto como antes. O `GET /api/auth` público diz o modo (`open`,
+`login`, `token` ou `disabled`).
+
+### Trocar a senha do admin
+
+1. Gere o hash bcrypt da nova senha (12+ caracteres), na pasta `backend/`:
+
+   ```bash
+   printf '%s' 'NOVA-SENHA-FORTE' | go run ./cmd/hashpw
+   ```
+
+   Sem Go: `htpasswd -bnBC 12 "" 'NOVA-SENHA-FORTE' | tr -d ':\n'`.
+2. No Render (*Environment*), troque `ADMIN_PASSWORD_HASH` pelo hash e salve.
+   O serviço reinicia sozinho.
+3. Pra derrubar todas as sessões abertas, troque também o `SESSION_SECRET`
+   (`openssl rand -hex 32`).
 
 ## Variáveis (referência)
 
@@ -183,7 +212,10 @@ Veja `.env.production.example`. Resumo:
 | `GROQ_API_KEY` | segredo | |
 | `CF_ACCOUNT_ID`, `CF_API_TOKEN` | segredo | |
 | `HORIZON_CORS_ORIGINS` | segredo/config | domínio da Vercel |
-| `HORIZON_ADMIN_TOKEN` | segredo | token das escritas; vazio em produção = escritas `503` |
+| `HORIZON_ADMIN_TOKEN` | segredo | token fixo das automações (workflow, push do X) |
+| `ADMIN_USERNAME` | config | usuário do login do painel |
+| `ADMIN_PASSWORD_HASH` | segredo | hash bcrypt da senha (`ADMIN_PASSWORD` em texto puro é aceito como fallback) |
+| `SESSION_SECRET` | segredo | chave HMAC das sessões de 12 h (32+ caracteres) |
 | `HORIZON_ENV` | `production` | liga o fail-closed (o Render também é detectado por `RENDER`) |
 | `LLM_PROVIDER` | `groq` | `ollama` (padrão local), `groq` ou `openai` |
 | `LLM_MODEL` | `openai/gpt-oss-20b` | |

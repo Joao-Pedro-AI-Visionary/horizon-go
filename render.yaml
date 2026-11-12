@@ -27,6 +27,12 @@ services:
         sync: false
       - key: HORIZON_ADMIN_TOKEN # bearer token for every write; unset = writes refused (503)
         sync: false
+      - key: ADMIN_USERNAME # dashboard login (/login)
+        sync: false
+      - key: ADMIN_PASSWORD_HASH # bcrypt; see docs/deploy.md "Trocar a senha"
+        sync: false
+      - key: SESSION_SECRET # HMAC key of the 12 h sessions (32+ chars)
+        sync: false
       - key: HORIZON_ENV
         value: production
       # --- models ---

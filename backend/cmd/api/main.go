@@ -14,6 +14,10 @@
 //	COLLECT_COOLDOWN 0    minimum time between triggered collections (429 inside it)
 //	SOURCE_TIMEOUT  30s   per-source fetch timeout
 //	HORIZON_ADMIN_TOKEN   bearer token required by every write (POST/PUT/PATCH/DELETE)
+//	ADMIN_USERNAME  login user for the dashboard (POST /api/auth/login)
+//	ADMIN_PASSWORD_HASH  bcrypt hash of the password (ADMIN_PASSWORD, plain,
+//	                is accepted as a fallback and hashed at startup)
+//	SESSION_SECRET  HMAC key of the 12 h session tokens (random per boot if unset)
 //	HORIZON_ENV     "production" (or running on Render) refuses writes while
 //	                HORIZON_ADMIN_TOKEN is unset (fail closed)
 //
@@ -23,7 +27,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -32,6 +38,8 @@ import (
 	"syscall"
 	"time"
 	_ "time/tzdata" // America/Sao_Paulo without a system zoneinfo
+
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/jpdev/horizon-go/internal/adapters/bus/natsbus"
 	"github.com/jpdev/horizon-go/internal/adapters/httpapi"
@@ -86,6 +94,42 @@ func listenAddr(lookup func(string) string) string {
 	return ":8080"
 }
 
+// loginFromEnv builds the dashboard login, or nil when ADMIN_USERNAME or a
+// password is missing.
+func loginFromEnv(lookup func(string) string, log *slog.Logger) (*httpapi.Login, error) {
+	user := strings.TrimSpace(lookup("ADMIN_USERNAME"))
+	hash := strings.TrimSpace(lookup("ADMIN_PASSWORD_HASH"))
+	plain := lookup("ADMIN_PASSWORD")
+	if user == "" || (hash == "" && plain == "") {
+		return nil, nil
+	}
+	if hash == "" {
+		h, err := bcrypt.GenerateFromPassword([]byte(plain), 12)
+		if err != nil {
+			return nil, fmt.Errorf("hash ADMIN_PASSWORD: %w", err)
+		}
+		hash = string(h)
+	} else if _, err := bcrypt.Cost([]byte(hash)); err != nil {
+		return nil, fmt.Errorf("ADMIN_PASSWORD_HASH is not a bcrypt hash: %w", err)
+	}
+	secret := []byte(lookup("SESSION_SECRET"))
+	if len(secret) == 0 {
+		secret = make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			return nil, err
+		}
+		log.Warn("SESSION_SECRET unset: sessions end when the API restarts")
+	} else if len(secret) < 32 {
+		return nil, errors.New("SESSION_SECRET must have at least 32 characters")
+	}
+	return &httpapi.Login{
+		Username:     user,
+		PasswordHash: []byte(hash),
+		Sessions:     &httpapi.Sessions{Secret: secret, TTL: httpapi.DefaultSessionTTL},
+		Limiter:      &httpapi.LoginLimiter{Max: 5, Window: time.Minute, MaxBlock: 15 * time.Minute},
+	}, nil
+}
+
 // isProduction is HORIZON_ENV=production, or a Render service (RENDER is
 // set on every Render instance).
 func isProduction(lookup func(string) string) bool {
@@ -122,6 +166,10 @@ func run(ctx context.Context, log *slog.Logger) error {
 	}
 	defer bus.Close()
 
+	login, err := loginFromEnv(os.Getenv, log)
+	if err != nil {
+		return err
+	}
 	timeout := envDuration("SOURCE_TIMEOUT", app.DefaultSourceTimeout)
 	read := postgres.ReadRepo{DB: pool}
 	sources := postgres.SourceRepo{DB: pool}
@@ -147,6 +195,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		AllowedOrigins:  corsOrigins(os.Getenv),
 		CollectCooldown: envDuration("COLLECT_COOLDOWN", 0),
 		AdminToken:      strings.TrimSpace(os.Getenv("HORIZON_ADMIN_TOKEN")),
+		Login:           login,
 		RequireAdmin:    isProduction(os.Getenv),
 		Log:             log,
 	}
@@ -161,7 +210,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	errc := make(chan error, 1)
 	go func() {
 		log.Info("api listening", "addr", hs.Addr, "cors", srv.AllowedOrigins,
-			"admin_token", srv.AdminToken != "", "writes_open", srv.WritesOpen())
+			"admin_token", srv.AdminToken != "", "login", srv.Login.Enabled(), "writes_open", srv.WritesOpen())
 		errc <- hs.ListenAndServe()
 	}()
 	select {

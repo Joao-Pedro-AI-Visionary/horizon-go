@@ -8,9 +8,11 @@ import (
 )
 
 // Writes (every method other than GET, HEAD and OPTIONS under /api) need
-// "Authorization: Bearer <AdminToken>". Reads stay public.
+// "Authorization: Bearer <token>", where token is either a session token from
+// POST /api/auth/login or the static AdminToken (GitHub Actions schedule, X
+// radar push). Reads stay public.
 //
-// With AdminToken empty, writes are open only when RequireAdmin is false
+// With neither configured, writes are open only when RequireAdmin is false
 // (local development); with RequireAdmin set (production) they fail closed
 // with 503, so a missing secret never leaves the API writable.
 
@@ -41,20 +43,38 @@ func tokenEqual(got, want string) bool {
 }
 
 // WritesOpen reports whether writes need no token (dev without a token).
-func (s *Server) WritesOpen() bool { return s.AdminToken == "" && !s.RequireAdmin }
+func (s *Server) WritesOpen() bool {
+	return s.AdminToken == "" && !s.Login.Enabled() && !s.RequireAdmin
+}
+
+// authorized reports whether tok is the admin token or a valid session.
+func (s *Server) authorized(tok string) bool {
+	if s.AdminToken != "" && tokenEqual(tok, s.AdminToken) {
+		return true
+	}
+	if s.Login.Enabled() {
+		if _, _, err := s.Login.Sessions.Verify(tok); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// publicWrites are POSTs anyone may call (they check credentials themselves).
+var publicWrites = map[string]bool{"/api/auth/login": true, "/api/auth/logout": true}
 
 func (s *Server) requireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isRead(r.Method) || s.WritesOpen() {
+		if isRead(r.Method) || s.WritesOpen() || publicWrites[r.URL.Path] {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if s.AdminToken == "" {
-			writeError(w, http.StatusServiceUnavailable, "writes disabled: HORIZON_ADMIN_TOKEN is not configured")
+		if s.AdminToken == "" && !s.Login.Enabled() {
+			writeError(w, http.StatusServiceUnavailable, "writes disabled: no admin credentials configured")
 			return
 		}
 		got, ok := bearer(r)
-		if !ok || !tokenEqual(got, s.AdminToken) {
+		if !ok || !s.authorized(got) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="horizon"`)
 			writeError(w, http.StatusUnauthorized, "admin token required")
 			return
@@ -70,13 +90,15 @@ func (s *Server) authCheck(w http.ResponseWriter, _ *http.Request) {
 }
 
 // authStatus (public GET /api/auth) tells the dashboard how writes work
-// without a failed request: "open" (dev, no token needed), "token" (send the
-// admin token) or "disabled" (production without a token: writes refused).
+// without a failed request: "open" (dev, no login needed), "login" (sign in
+// at /login), "token" (only the static admin token) or "disabled".
 func (s *Server) authStatus(w http.ResponseWriter, _ *http.Request) {
 	mode := "token"
 	switch {
 	case s.WritesOpen():
 		mode = "open"
+	case s.Login.Enabled():
+		mode = "login"
 	case s.AdminToken == "":
 		mode = "disabled"
 	}

@@ -181,3 +181,42 @@ func TestValidateLimit(t *testing.T) {
 		t.Fatal("huge limit accepted")
 	}
 }
+
+func TestFetchRetriesRateLimitAndBadGateway(t *testing.T) {
+	RetryBase = time.Millisecond
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		switch calls {
+		case 1:
+			w.WriteHeader(http.StatusTooManyRequests)
+		case 2:
+			w.WriteHeader(http.StatusBadGateway)
+		default:
+			fmt.Fprint(w, manyFeed)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	s := New(Params{Name: "flaky", Config: Config{URL: srv.URL}})
+	items, err := s.Fetch(context.Background(), now.Add(-48*time.Hour))
+	if err != nil || calls != 3 || len(items) == 0 {
+		t.Fatalf("calls=%d items=%d err=%v", calls, len(items), err)
+	}
+}
+
+func TestFetchGivesUpAfterRetriesAndSkipsNonRetryable(t *testing.T) {
+	RetryBase = time.Millisecond
+	for _, c := range []struct{ status, want int }{{http.StatusTooManyRequests, 3}, {http.StatusNotFound, 1}} {
+		calls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			w.WriteHeader(c.status)
+		}))
+		s := New(Params{Name: "down", Config: Config{URL: srv.URL}})
+		_, err := s.Fetch(context.Background(), now)
+		srv.Close()
+		if err == nil || calls != c.want {
+			t.Errorf("status %d: calls=%d err=%v", c.status, calls, err)
+		}
+	}
+}

@@ -85,7 +85,9 @@ type Server struct {
 	// makes writes fail closed (503) while AdminToken is empty; see auth.go.
 	AdminToken   string
 	RequireAdmin bool
-	Log          *slog.Logger
+	// Login enables POST /api/auth/login (username + password -> session).
+	Login *Login
+	Log   *slog.Logger
 
 	collecting  sync.Mutex
 	lastCollect time.Time // guarded by collecting
@@ -112,6 +114,9 @@ func (s *Server) Handler() http.Handler {
 		})
 		r.Use(s.requireAdmin)
 		r.Get("/auth", s.authStatus)
+		r.Get("/auth/me", s.me)
+		r.Post("/auth/login", s.login)
+		r.Post("/auth/logout", s.logout)
 		r.Post("/auth/check", s.authCheck)
 		r.Get("/feed", s.feed)
 		r.Get("/feed/timeline", s.feedTimeline)
