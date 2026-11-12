@@ -115,7 +115,7 @@ func DefaultSources() []domain.SourceConfig {
 		rss("Hacker News · Claude Code, Codex e Cursor", `{"url":"https://hnrss.org/newest?q=%22Claude+Code%22+OR+Codex+OR+Cursor&points=50","limit":4}`),
 		rss("Hacker News · agentes e MCP", `{"url":"https://hnrss.org/newest?q=%22coding+agent%22+OR+MCP&points=50","limit":4}`),
 		rss("r/LocalLLaMA", `{"url":"https://www.reddit.com/r/LocalLLaMA/top/.rss?t=day","limit":8}`),
-		rss("r/ClaudeAI", `{"url":"https://www.reddit.com/r/ClaudeAI/top/.rss?t=day","limit":6}`),
+		rss("Lobsters · IA", `{"url":"https://lobste.rs/t/ai.rss","limit":6}`),
 		rss("Simon Willison", `{"url":"https://simonwillison.net/atom/everything/","limit":5}`),
 		rss("Latent Space", `{"url":"https://www.latent.space/feed","limit":3}`),
 		rss("Hugging Face Blog", `{"url":"https://huggingface.co/blog/feed.xml","limit":3}`),
