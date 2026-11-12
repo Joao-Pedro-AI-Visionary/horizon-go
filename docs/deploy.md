@@ -210,3 +210,27 @@ itens, por isso usa `"undated": true` (data do próprio feed).
 O serviço do Render foi criado apontando pra branch de deploy. Quando os PRs
 forem mergeados, troque a branch do serviço pra `main` (*Settings → Build &
 Deploy → Branch*).
+
+## Itens empurrados (radar do X)
+
+A API do X é paga, então os posts de alto engajamento chegam por push:
+`POST /api/items/ingest` (precisa do token de admin) cria, se faltar, a fonte
+`X (radar)` do tipo `push`, que o coletor nunca busca. Cada item vai pro
+`items.raw` e segue o caminho normal (persistência, nota do Groq, embedding,
+dedup). URLs já gravadas ou repetidas no lote são ignoradas.
+
+```bash
+curl -X POST "$HORIZON_API_URL/api/items/ingest" \
+  -H "Authorization: Bearer $HORIZON_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '[{"source":"X","url":"https://x.com/user/status/123","title":"Título curto",
+        "text":"Texto do post","author":"@user","published_at":"2026-11-12T10:00:00Z",
+        "metrics":{"views":120000,"likes":3400,"reposts":510}}]'
+```
+
+- Corpo: array JSON com 1 a 50 itens. `url` (http/https) e `title` ou `text`
+  são obrigatórios; sem `title`, a primeira linha do `text` vira título.
+  `published_at` (RFC 3339) é opcional; sem ele vale a hora do envio.
+- Campos desconhecidos dão `400`. A resposta é `202` com
+  `{"run_id","source_id","source_name","received","accepted","duplicates","invalid","errors"}`.
+- As métricas entram no texto que o modelo lê ("Engagement: 120.0K views…").
+- Recomendado: até 20 itens por chamada (cada item custa uma chamada ao Groq).
