@@ -178,7 +178,7 @@ func TestIngestionEndToEnd(t *testing.T) {
 		return s
 	}
 	hnSrc := mk(domain.KindHackerNews, "hn", `{"min_score":100}`, true)
-	rdSrc := mk(domain.KindReddit, "r/golang", `{"subreddit":"golang","sort":"hot"}`, true)
+	rdSrc := mk(domain.KindReddit, "r/golang", `{"subreddit":"golang","sort":"hot","use_json":true}`, true)
 	feed := mk(domain.KindRSS, "blog", `{"url":"`+up.URL+`/feed.atom"}`, true)
 	broken := mk(domain.KindRSS, "broken", `{"url":"`+up.URL+`/broken.atom"}`, true)
 	disabled := mk(domain.KindRSS, "disabled", `{"url":"`+up.URL+`/feed.atom"}`, false)
