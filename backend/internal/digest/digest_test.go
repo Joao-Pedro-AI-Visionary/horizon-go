@@ -131,7 +131,7 @@ func TestRenderMarkdownAndHTML(t *testing.T) {
 	for _, want := range []string{
 		`<html lang="pt-BR">`, "<title>Radar by JpDev — 2026-11-02</title>",
 		`<a href="https://go.dev/blog/go1.27" rel="noopener noreferrer" target="_blank">Go 1.27 &lt;b&gt;released&lt;/b&gt;</a>`,
-		`<span class="score">8.5</span>`, `<span class="tag">release</span>`, "#FFD400",
+		`<span class="score">8.5</span>`, `<span class="tag">release</span>`, "#276b43",
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("html missing %q", want)
@@ -168,12 +168,13 @@ type fakeStore struct {
 	cands    []domain.FeedItem
 	from, to time.Time
 	saved    domain.Digest
+	candErr  error
 }
 
 func (f *fakeStore) GetSettings(context.Context) (domain.Settings, error) { return f.st, nil }
 func (f *fakeStore) DigestCandidates(_ context.Context, from, to time.Time) ([]domain.FeedItem, error) {
 	f.from, f.to = from, to
-	return f.cands, nil
+	return f.cands, f.candErr
 }
 func (f *fakeStore) SaveDigest(_ context.Context, d domain.Digest) (domain.Digest, error) {
 	f.saved = d

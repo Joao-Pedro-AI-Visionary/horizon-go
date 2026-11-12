@@ -22,7 +22,8 @@ O `Dockerfile` da raiz gera uma imagem distroless com quatro binários. O
    `deploy/nats.conf`, store em `/tmp/nats`).
 2. Roda as migrations do goose (embutidas no binário), tentando de novo
    enquanto o Neon acorda.
-3. Sobe o worker (com `--seed`, que cria as fontes padrão se faltarem) e a API
+3. Sobe o worker (com `--seed`, que cria as fontes padrão só se a tabela
+   `sources` estiver vazia) e a API
    na porta `$PORT` que o Render define.
 4. Se qualquer processo morrer, encerra os outros e sai com erro, e o Render
    reinicia o container.
@@ -83,6 +84,8 @@ erro nem retry. `EMBED_PROVIDER=none` faz o mesmo de forma permanente.
    - `DATABASE_URL`: a URL direta do Neon
    - `GROQ_API_KEY`
    - `CF_ACCOUNT_ID` e `CF_API_TOKEN`
+   - `HORIZON_ADMIN_TOKEN`: token das rotas de escrita (`openssl rand -hex 32`).
+     Sem ele, em produção, toda escrita responde `503`.
    - `HORIZON_CORS_ORIGINS`: o domínio da Vercel, por exemplo
      `https://horizon-web.vercel.app`. Separe vários por vírgula e não coloque
      barra no final. Se ainda não tiver o domínio, ponha um provisório e
@@ -97,34 +100,38 @@ erro nem retry. `EMBED_PROVIDER=none` faz o mesmo de forma permanente.
    `horizon-web`. O framework Vite é detectado sozinho.
 2. Em **Environment Variables**, defina
    `VITE_API_URL=https://horizon-api.onrender.com`, sem barra no final.
+   **Só essa.** Toda variável `VITE_` vai pro bundle público: nunca ponha o
+   token de admin nem outra chave na Vercel. O token é digitado no painel
+   (Fontes & Config → Desbloquear edição) e fica só no `localStorage` do
+   navegador.
 3. Faça o deploy, copie o domínio final e confira se ele está em
    `HORIZON_CORS_ORIGINS` no Render. Se mudar o valor, o Render reinicia o
    serviço sozinho.
 
-## Coleta com o serviço dormindo
+## Coleta 2x por dia (serviço dormindo)
 
-O Render free **dorme depois de 15 minutos sem tráfego de entrada**, e o
-tráfego de saída (coletas, Groq) não conta. Enquanto ele dorme, nada roda: nem
-o ticker de coleta de 30 minutos, nem o cron do digest diário. O que foi feito
-pra lidar com isso:
+O Render free **dorme depois de 15 minutos sem tráfego de entrada**. Por isso
+o worker não coleta sozinho (`COLLECT_INTERVAL=off`): ele só pontua, deduplica
+e roda o digest enquanto está acordado. As coletas vêm do workflow
+`.github/workflows/wake-and-collect.yml`:
 
-- **Coleta ao acordar:** cada spin-up reinicia o container, e o worker coleta
-  logo no boot. Abrir o front já dispara uma coleta.
-- **Coleta sob demanda:** `POST /api/pipeline/run`, que é o botão do front.
-  Pra não queimar a cota grátis, `COLLECT_COOLDOWN=10m` responde `429` com
-  `Retry-After` se outra coleta tiver começado há menos de 10 minutos.
-- **Cron externo grátis (opcional):** use uma das duas opções.
-  - <https://cron-job.org>: crie um job a cada 30 a 60 minutos com
-    `POST https://horizon-api.onrender.com/api/pipeline/run`, ou um `GET` em
-    `/healthz` só pra acordar o serviço.
-  - GitHub Actions: o workflow `.github/workflows/wake-and-collect.yml` vem
-    desligado. Pra ligar, crie a *variável* de repositório `HORIZON_API_URL` e
-    descomente o `schedule`. Ele não usa segredos.
+| Horário (America/Sao_Paulo) | Cron (UTC) |
+|---|---|
+| 07:30 | `30 10 * * *` |
+| 16:30 | `30 19 * * *` |
 
-Um ping a cada 30 minutos deixa o serviço acordado cerca de metade do tempo
-(uns 370 h/mês), dentro das 750 h grátis. Manter acordado 24/7 com ping a cada
-14 minutos dá 744 h, que cabe, mas consome toda a cota do workspace e mais
-tokens do Groq.
+Cada execução acorda o serviço (`GET /healthz`, até 10 tentativas), depois faz
+`POST /api/pipeline/run` com `Authorization: Bearer $HORIZON_ADMIN_TOKEN`,
+tentando de novo em erro 5xx. `409` (coleta em andamento) e `429`
+(`COLLECT_COOLDOWN=10m`) contam como sucesso. `COLLECT_WINDOW=16h` cobre o
+intervalo de 15 h entre as duas execuções.
+
+Segredos do repositório (*Settings → Secrets and variables → Actions*):
+`HORIZON_API_URL` (URL do Render, sem barra) e `HORIZON_ADMIN_TOKEN`.
+O GitHub só roda `schedule` a partir da branch padrão (`main`) e pode atrasar
+alguns minutos.
+
+Abrir o front acorda o serviço, mas **não** dispara coleta.
 
 ## Limites grátis (verificados em 12/11/2026)
 
@@ -156,11 +163,62 @@ O que isso significa na prática:
 
 ## Segurança
 
-As rotas de escrita da API (`/api/sources`, `/api/settings`,
-`/api/pipeline/run`) **não têm autenticação**, assim como no ambiente local.
-Qualquer pessoa com a URL do Render consegue editar fontes ou disparar
-coletas. O cooldown limita o abuso de cota, mas não substitui um login. Se o
-app ficar público de verdade, o próximo passo é proteger essas rotas.
+Leituras (`GET`) são públicas. **Toda escrita** em `/api` (`POST`, `PUT`,
+`PATCH`, `DELETE`: fontes, settings, `pipeline/run`, `sources/{id}/fetch`,
+`digests/generate`, `items/ingest`) exige `Authorization: Bearer <token>`,
+onde o token é um destes:
+
+- **Sessão de login:** o painel tem a página `/login` (link discreto "Entrar"
+  no rodapé). `POST /api/auth/login` com `{"username","password"}` confere o
+  usuário em tempo constante e a senha com bcrypt, e devolve um token de sessão
+  assinado (HMAC-SHA256 com `SESSION_SECRET`) que vale 12 h. Ele é Bearer, não
+  cookie, porque Vercel e Render são sites diferentes e o navegador bloqueia
+  cookie de terceiros. O painel guarda o token no `sessionStorage` e sai
+  sozinho quando ele expira ou quando uma escrita volta `401`.
+  `GET /api/auth/me` valida o token.
+  - Limite: 5 tentativas erradas por minuto por IP. Depois disso o IP fica
+    bloqueado por 1 min, e cada erro seguinte dobra o bloqueio, até 15 min
+    (`429` com `Retry-After`). A mensagem de erro é sempre genérica.
+- **`HORIZON_ADMIN_TOKEN`:** token fixo das automações (o workflow 2x/dia e o
+  push do radar do X).
+
+Sem token ou com token inválido, a API responde `401`. Em produção
+(`HORIZON_ENV=production` ou no Render), sem nenhuma credencial configurada,
+as escritas falham fechadas com `503`. Localmente, sem credenciais, tudo
+continua aberto como antes. O `GET /api/auth` público diz o modo (`open`,
+`login`, `token` ou `disabled`).
+
+### Esqueci minha senha
+
+Na página `/login`, o link "Esqueci minha senha" abre `/forgot`, com um botão
+só. `POST /api/auth/forgot` responde sempre o mesmo 200 genérico e **não
+aceita destinatário**: o link vai só pra `RESET_EMAIL_TO`, via Resend
+(`RESEND_API_KEY`, remetente `RESET_FROM`). Limites: 3 pedidos por IP a cada
+15 min e no máximo 5 e-mails por hora no total.
+
+- O link `{FRONT_URL}/reset?token=…` vale 30 min e funciona uma vez. No banco
+  fica só o sha256 do token (tabela `password_resets`).
+- `POST /api/auth/reset {token, new_password}` (10+ caracteres) grava o hash
+  bcrypt novo em `admin_credentials`. A partir daí o login usa essa senha, e
+  não mais o `ADMIN_PASSWORD_HASH`. Também sobe a `session_version`, o que
+  derruba todas as sessões abertas. O `HORIZON_ADMIN_TOKEN` das automações não
+  muda.
+- Pra voltar a usar a senha do Render: `DELETE FROM admin_credentials;` no
+  Neon.
+
+### Trocar a senha do admin
+
+1. Gere o hash bcrypt da nova senha (12+ caracteres), na pasta `backend/`:
+
+   ```bash
+   printf '%s' 'NOVA-SENHA-FORTE' | go run ./cmd/hashpw
+   ```
+
+   Sem Go: `htpasswd -bnBC 12 "" 'NOVA-SENHA-FORTE' | tr -d ':\n'`.
+2. No Render (*Environment*), troque `ADMIN_PASSWORD_HASH` pelo hash e salve.
+   O serviço reinicia sozinho.
+3. Pra derrubar todas as sessões abertas, troque também o `SESSION_SECRET`
+   (`openssl rand -hex 32`).
 
 ## Variáveis (referência)
 
@@ -172,14 +230,62 @@ Veja `.env.production.example`. Resumo:
 | `GROQ_API_KEY` | segredo | |
 | `CF_ACCOUNT_ID`, `CF_API_TOKEN` | segredo | |
 | `HORIZON_CORS_ORIGINS` | segredo/config | domínio da Vercel |
+| `HORIZON_ADMIN_TOKEN` | segredo | token fixo das automações (workflow, push do X) |
+| `ADMIN_USERNAME` | config | usuário do login do painel |
+| `ADMIN_PASSWORD_HASH` | segredo | hash bcrypt da senha (`ADMIN_PASSWORD` em texto puro é aceito como fallback) |
+| `SESSION_SECRET` | segredo | chave HMAC das sessões de 12 h (32+ caracteres) |
+| `RESEND_API_KEY` | segredo | envio do e-mail de "esqueci minha senha" (Resend) |
+| `RESET_EMAIL_TO` | config | único destinatário do link de redefinição |
+| `RESET_FROM` | config | remetente (padrão `Horizon <onboarding@resend.dev>`) |
+| `FRONT_URL` | config | URL do painel usada no link (`https://horizon-web-eight.vercel.app`) |
+| `HORIZON_ENV` | `production` | liga o fail-closed (o Render também é detectado por `RENDER`) |
 | `LLM_PROVIDER` | `groq` | `ollama` (padrão local), `groq` ou `openai` |
 | `LLM_MODEL` | `openai/gpt-oss-20b` | |
 | `LLM_RPM` | `20` | |
 | `EMBED_PROVIDER` | `cloudflare` | `ollama` (padrão local), `cloudflare` ou `none` |
 | `EMBED_MODEL` | `@cf/baai/bge-base-en-v1.5` | precisa ter 768 dims |
 | `SCORE_WORKERS` | `1` | |
-| `COLLECT_INTERVAL` | `30m` | ticker do worker (só enquanto acordado) |
+| `COLLECT_INTERVAL` | `off` | sem coleta própria; o GitHub Actions dispara 07:30 e 16:30 BRT (`30m` local) |
+| `COLLECT_WINDOW` | `16h` | quão para trás uma coleta olha |
 | `COLLECT_COOLDOWN` | `10m` | intervalo mínimo entre coletas disparadas pela API |
-| `WORKER_SEED` | `true` | cria as fontes padrão se faltarem (idempotente) |
+| `WORKER_SEED` | `true` | cria as fontes padrão só com a tabela `sources` vazia |
 | `PORT` | Render define | a API usa `:$PORT` se `API_ADDR` estiver vazio |
 | `MIGRATE_ON_BOOT` | `true` (padrão) | |
+
+## Fontes padrão
+
+25 feeds RSS/Atom (`backend/internal/ingest/ingest.go`), cada um com `limit`
+(só os N mais novos por coleta), somando no máximo 94 itens por coleta. Com
+duas coletas por dia e dedup por URL, isso fica dentro das ~100 a 130 notícias
+pontuadas por dia do Groq free. O feed de trending do GitHub não data os
+itens, por isso usa `"undated": true` (data do próprio feed).
+
+## Depois do merge
+
+O serviço do Render foi criado apontando pra branch de deploy. Quando os PRs
+forem mergeados, troque a branch do serviço pra `main` (*Settings → Build &
+Deploy → Branch*).
+
+## Itens empurrados (radar do X)
+
+A API do X é paga, então os posts de alto engajamento chegam por push:
+`POST /api/items/ingest` (precisa do token de admin) cria, se faltar, a fonte
+`X (radar)` do tipo `push`, que o coletor nunca busca. Cada item vai pro
+`items.raw` e segue o caminho normal (persistência, nota do Groq, embedding,
+dedup). URLs já gravadas ou repetidas no lote são ignoradas.
+
+```bash
+curl -X POST "$HORIZON_API_URL/api/items/ingest" \
+  -H "Authorization: Bearer $HORIZON_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '[{"source":"X","url":"https://x.com/user/status/123","title":"Título curto",
+        "text":"Texto do post","author":"@user","published_at":"2026-11-12T10:00:00Z",
+        "metrics":{"views":120000,"likes":3400,"reposts":510}}]'
+```
+
+- Corpo: array JSON com 1 a 50 itens. `url` (http/https) e `title` ou `text`
+  são obrigatórios; sem `title`, a primeira linha do `text` vira título.
+  `published_at` (RFC 3339) é opcional; sem ele vale a hora do envio.
+- Campos desconhecidos dão `400`. A resposta é `202` com
+  `{"run_id","source_id","source_name","received","accepted","duplicates","invalid","errors"}`.
+- As métricas entram no texto que o modelo lê ("Engagement: 120.0K views…").
+- Recomendado: até 20 itens por chamada (cada item custa uma chamada ao Groq).

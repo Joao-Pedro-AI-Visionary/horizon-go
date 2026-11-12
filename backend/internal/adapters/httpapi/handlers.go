@@ -13,6 +13,7 @@ import (
 	"github.com/jpdev/horizon-go/internal/adapters/store/postgres"
 	"github.com/jpdev/horizon-go/internal/app"
 	"github.com/jpdev/horizon-go/internal/domain"
+	"github.com/jpdev/horizon-go/internal/ingest"
 )
 
 const (
@@ -23,7 +24,7 @@ const (
 	maxQueryRunes      = 200
 )
 
-var sourceKinds = map[string]bool{domain.KindHackerNews: true, domain.KindReddit: true, domain.KindRSS: true}
+var sourceKinds = map[string]bool{domain.KindHackerNews: true, domain.KindReddit: true, domain.KindRSS: true, domain.KindPush: true}
 
 var periods = map[string]time.Duration{"24h": 24 * time.Hour, "7d": 7 * 24 * time.Hour, "30d": 30 * 24 * time.Hour}
 
@@ -62,7 +63,7 @@ func parseFeedQuery(v url.Values, now time.Time) (domain.FeedQuery, error) {
 		Sort:       strings.TrimSpace(v.Get("sort")),
 	}
 	if q.SourceKind != "" && !sourceKinds[q.SourceKind] {
-		return q, domain.Invalidf("source must be one of hackernews, reddit, rss")
+		return q, domain.Invalidf("source must be one of hackernews, reddit, rss, push")
 	}
 	if raw := strings.TrimSpace(v.Get("source_id")); raw != "" {
 		id, err := strconv.ParseInt(raw, 10, 64)
@@ -326,7 +327,7 @@ func (in sourceInput) apply(c *domain.SourceConfig) {
 
 func (s *Server) validateSource(c domain.SourceConfig) error {
 	if !sourceKinds[c.Kind] {
-		return domain.Invalidf("kind must be one of hackernews, reddit, rss")
+		return domain.Invalidf("kind must be one of hackernews, reddit, rss, push")
 	}
 	if c.Name == "" || len([]rune(c.Name)) > 100 {
 		return domain.Invalidf("name is required (up to 100 characters)")
@@ -557,3 +558,23 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 }
 
 var _ Store = postgres.ReadRepo{}
+
+// ingestItems accepts a JSON array of pushed items (see ingest.PushItem) for
+// the "X (radar)" push source. 202 with the report; 400 on a bad body.
+func (s *Server) ingestItems(w http.ResponseWriter, r *http.Request) {
+	if s.Pusher == nil {
+		writeError(w, http.StatusNotImplemented, "push ingest is not configured")
+		return
+	}
+	var in []ingest.PushItem
+	if err := decode(r, &in); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	rep, err := s.Pusher.Push(r.Context(), in)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, rep)
+}

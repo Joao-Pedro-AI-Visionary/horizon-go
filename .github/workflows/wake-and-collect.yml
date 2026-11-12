@@ -1,36 +1,63 @@
-# Optional free "cron" for the Render free service, which sleeps after 15 min
-# without inbound traffic (the worker's own 30 min ticker stops with it).
-# Every run wakes the service (/healthz) and triggers a collection.
+# Twice-a-day collection for the Render free service, which sleeps after
+# 15 min without inbound traffic. The worker does not collect on its own
+# (COLLECT_INTERVAL=off): these runs are the schedule.
 #
-# Disabled by default: only manual runs. To enable, set the repository
-# variable HORIZON_API_URL (Settings > Secrets and variables > Actions >
-# Variables, e.g. https://horizon-api.onrender.com) and uncomment "schedule".
-# No secrets are needed. See docs/deploy.md.
+#   07:30 and 16:30 America/Sao_Paulo (UTC-3) = 10:30 and 19:30 UTC
+#
+# Repository secrets (Settings > Secrets and variables > Actions):
+#   HORIZON_API_URL      e.g. https://horizon-api.onrender.com
+#   HORIZON_ADMIN_TOKEN  same value as the Render env var
+# GitHub runs "schedule" only from the default branch and may delay it by
+# a few minutes. See docs/deploy.md.
 name: wake-and-collect
 
 on:
+  schedule:
+    - cron: "30 10 * * *" # 07:30 BRT
+    - cron: "30 19 * * *" # 16:30 BRT
   workflow_dispatch:
-  # schedule:
-  #   - cron: "*/30 * * * *" # every 30 min (GitHub may delay scheduled runs)
 
 permissions: {}
 
+concurrency:
+  group: wake-and-collect
+  cancel-in-progress: false
+
 jobs:
-  ping:
+  collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    if: ${{ vars.HORIZON_API_URL != '' }}
+    timeout-minutes: 20
+    env:
+      API: ${{ secrets.HORIZON_API_URL }}
+      TOKEN: ${{ secrets.HORIZON_ADMIN_TOKEN }}
     steps:
-      - name: Wake the service
+      - name: Check secrets
         run: |
-          for i in 1 2 3 4 5 6; do
-            if curl -fsS --max-time 90 "${{ vars.HORIZON_API_URL }}/healthz"; then exit 0; fi
-            sleep 15
+          test -n "$API" || { echo "::error::secret HORIZON_API_URL is not set"; exit 1; }
+          test -n "$TOKEN" || { echo "::error::secret HORIZON_ADMIN_TOKEN is not set"; exit 1; }
+      - name: Wake the service
+        # A cold start on the free plan takes about a minute.
+        run: |
+          for i in $(seq 1 10); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 90 "$API/healthz" || true)
+            echo "healthz attempt $i -> $code"
+            if [ "$code" = 200 ]; then exit 0; fi
+            sleep 20
           done
           exit 1
       - name: Trigger a collection
-        # 409 = one already running, 429 = inside COLLECT_COOLDOWN: both fine.
+        # 200 = collected; 409 = one already running; 429 = inside
+        # COLLECT_COOLDOWN (a run just happened). 502/503/5xx are retried.
         run: |
-          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 180 -X POST "${{ vars.HORIZON_API_URL }}/api/pipeline/run")
-          echo "pipeline/run -> $code"
-          case "$code" in 200|409|429|502) exit 0;; *) exit 1;; esac
+          for i in 1 2 3 4; do
+            code=$(curl -sS -o /tmp/run.json -w '%{http_code}' --max-time 300 -X POST \
+              -H "Authorization: Bearer $TOKEN" "$API/api/pipeline/run" || echo 000)
+            echo "pipeline/run attempt $i -> $code"
+            case "$code" in
+              200) head -c 2000 /tmp/run.json; echo; exit 0;;
+              409|429) exit 0;;
+              401|403) echo "::error::admin token rejected"; exit 1;;
+            esac
+            sleep 30
+          done
+          exit 1

@@ -160,6 +160,27 @@ RETURNING id`,
 	return id, mapErr(err)
 }
 
+// ExistingURLHashes returns the subset of hashes already stored in items.
+func (r ItemRepo) ExistingURLHashes(ctx context.Context, hashes []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(hashes) == 0 {
+		return out, nil
+	}
+	rows, err := r.DB.Query(ctx, `SELECT url_hash FROM items WHERE url_hash = ANY($1)`, hashes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		out[h] = true
+	}
+	return out, rows.Err()
+}
+
 // FetchRunRepo implements ports.FetchRunRepo.
 type FetchRunRepo struct{ DB *pgxpool.Pool }
 

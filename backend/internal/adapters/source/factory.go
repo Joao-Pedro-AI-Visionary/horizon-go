@@ -3,9 +3,11 @@
 package source
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/jpdev/horizon-go/internal/adapters/source/hn"
 	"github.com/jpdev/horizon-go/internal/adapters/source/reddit"
@@ -51,7 +53,18 @@ func Build(sc domain.SourceConfig, client *http.Client, base BaseURLs) (ports.So
 			return nil, fmt.Errorf("source %q: %w", sc.Name, err)
 		}
 		return rss.New(rss.Params{SourceID: sc.ID, Name: sc.Name, Client: client, Config: c}), nil
+	case domain.KindPush:
+		return pushSource{name: sc.Name}, nil
 	default:
 		return nil, fmt.Errorf("source %q: unknown kind %q", sc.Name, sc.Kind)
 	}
+}
+
+// pushSource stands for a kind=push row: it has nothing to fetch, its items
+// arrive through POST /api/items/ingest.
+type pushSource struct{ name string }
+
+func (p pushSource) Name() string { return p.name }
+func (p pushSource) Fetch(context.Context, time.Time) ([]domain.Item, error) {
+	return nil, nil
 }

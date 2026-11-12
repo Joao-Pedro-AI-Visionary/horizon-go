@@ -21,6 +21,7 @@ import (
 	"github.com/jpdev/horizon-go/internal/adapters/store/postgres"
 	"github.com/jpdev/horizon-go/internal/app"
 	"github.com/jpdev/horizon-go/internal/domain"
+	"github.com/jpdev/horizon-go/internal/ingest"
 	"github.com/jpdev/horizon-go/internal/ports"
 )
 
@@ -49,6 +50,16 @@ type Collector interface {
 	CollectSource(ctx context.Context, id int64, since time.Time) (app.Report, error)
 }
 
+// Pusher receives items pushed by an external routine (POST /api/items/ingest).
+type Pusher interface {
+	Push(ctx context.Context, items []ingest.PushItem) (ingest.PushReport, error)
+}
+
+// AlertStore lists the open failures for GET /api/admin/alerts.
+type AlertStore interface {
+	Alerts(ctx context.Context, since, now time.Time, stale time.Duration) ([]domain.Alert, error)
+}
+
 // Check is a named dependency probe for /healthz.
 type Check struct {
 	Name string
@@ -61,6 +72,13 @@ type Server struct {
 	Sources   ports.SourceRepo
 	Digests   Digester
 	Collector Collector
+	// Pusher, when set, enables POST /api/items/ingest.
+	Pusher Pusher
+	// Alerts, when set, enables GET /api/admin/alerts (admin only).
+	Alerts AlertStore
+	// AlertStale raises an alert when no fetch succeeded for this long
+	// (default 14h; negative disables it).
+	AlertStale time.Duration
 	// ValidateSource builds the adapter to reject bad kinds/configs (400).
 	ValidateSource func(domain.SourceConfig) error
 	// ValidateCron checks the digest cron spec.
@@ -73,7 +91,15 @@ type Server struct {
 	// Retry-After) that starts sooner than this after the previous one. It
 	// keeps a public deploy from burning the free model quotas.
 	CollectCooldown time.Duration
-	Log             *slog.Logger
+	// AdminToken guards every write (Authorization: Bearer). RequireAdmin
+	// makes writes fail closed (503) while AdminToken is empty; see auth.go.
+	AdminToken   string
+	RequireAdmin bool
+	// Login enables POST /api/auth/login (username + password -> session).
+	Login *Login
+	// Reset, when set, enables the "esqueci minha senha" e-mail.
+	Reset *PasswordReset
+	Log   *slog.Logger
 
 	collecting  sync.Mutex
 	lastCollect time.Time // guarded by collecting
@@ -98,6 +124,14 @@ func (s *Server) Handler() http.Handler {
 				next.ServeHTTP(w, req)
 			})
 		})
+		r.Use(s.requireAdmin)
+		r.Get("/auth", s.authStatus)
+		r.Get("/auth/me", s.me)
+		r.Post("/auth/login", s.login)
+		r.Post("/auth/logout", s.logout)
+		r.Post("/auth/forgot", s.forgot)
+		r.Post("/auth/reset", s.reset)
+		r.Post("/auth/check", s.authCheck)
 		r.Get("/feed", s.feed)
 		r.Get("/feed/timeline", s.feedTimeline)
 		r.Get("/items/{id}", s.item)
@@ -113,6 +147,8 @@ func (s *Server) Handler() http.Handler {
 		r.Put("/settings", s.putSettings)
 		r.Get("/metrics", s.metrics)
 		r.Post("/pipeline/run", s.runPipeline)
+		r.Post("/items/ingest", s.ingestItems)
+		r.Get("/admin/alerts", s.adminAlerts)
 	})
 	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
@@ -155,7 +191,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 				return
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept, X-Request-Id")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, X-Request-Id")
 			w.Header().Set("Access-Control-Max-Age", "600")
 			w.WriteHeader(http.StatusNoContent)
 			return
