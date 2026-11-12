@@ -391,16 +391,21 @@ func (d *Deduper) DedupItem(ctx context.Context, id int64) (postgres.ClusterResu
 	if err != nil {
 		return postgres.ClusterResult{}, err
 	}
-	if row.Status != "scored" || len(row.Embedding) == 0 {
+	if row.Status != "scored" {
 		return postgres.ClusterResult{Skipped: true}, nil
 	}
-	ns, err := d.Repo.Neighbors(ctx, id, row.Embedding, row.PublishedAt, window, k)
-	if err != nil {
-		return postgres.ClusterResult{}, err
-	}
-	dec, err := SelectMatches(ctx, d.Analyzer, th, row, ns)
-	if err != nil {
-		return postgres.ClusterResult{}, err
+	var ns []postgres.DedupRow
+	var dec Decision
+	// Without an embedding (EMBED_PROVIDER=none) there is no neighbour search
+	// and no LLM call: the item becomes its own cluster and reaches feed_view
+	// with duplicate_count 0.
+	if len(row.Embedding) > 0 {
+		if ns, err = d.Repo.Neighbors(ctx, id, row.Embedding, row.PublishedAt, window, k); err != nil {
+			return postgres.ClusterResult{}, err
+		}
+		if dec, err = SelectMatches(ctx, d.Analyzer, th, row, ns); err != nil {
+			return postgres.ClusterResult{}, err
+		}
 	}
 	res, err := d.Repo.ApplyCluster(ctx, id, dec.Matched())
 	if err != nil {

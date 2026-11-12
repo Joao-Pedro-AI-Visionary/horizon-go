@@ -628,3 +628,80 @@ func TestRunStagesContinuouslyAndStopCleanly(t *testing.T) {
 		t.Errorf("clusters=%d feed_view=%d, want 1/1", clusters, feed)
 	}
 }
+
+// EMBED_PROVIDER=none: items are scored without an embedding, each becomes its
+// own cluster in feed_view (duplicate_count 0) and the dedup LLM is never asked.
+func TestScoreAndDedupWithoutEmbedder(t *testing.T) {
+	if os.Getenv("HORIZON_SKIP_INTEGRATION") == "1" {
+		t.Skip("HORIZON_SKIP_INTEGRATION=1")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	pool := testDB(t, ctx)
+	bus := testBus(t, ctx)
+
+	src, err := postgres.SourceRepo{DB: pool}.Create(ctx, domain.SourceConfig{Kind: domain.KindRSS, Name: "test feed", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	var raw []domain.Item
+	for _, f := range fixture {
+		it := domain.Item{SourceID: src.ID, ExternalID: f.key, URL: "https://example.test/" + f.key, Title: f.title,
+			Content: "content " + f.key, PublishedAt: now.Add(-f.ago), FetchedAt: now}
+		if err := it.Prepare(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := (postgres.ItemRepo{DB: pool}).Upsert(ctx, it); err != nil {
+			t.Fatal(err)
+		}
+		raw = append(raw, it)
+	}
+	if err := bus.PublishRaw(ctx, "run-none", raw); err != nil {
+		t.Fatal(err)
+	}
+
+	model := &fakeModel{}
+	an := &app.Analyzer{LLM: model, Cache: postgres.AICache{DB: pool}, Dims: 768, Retry: retry.Policy{Attempts: 2, Base: time.Millisecond}}
+	ai := postgres.AIRepo{DB: pool}
+	rawCons, err := bus.Consumer(ctx, "it-scorer-none", bus.RawSubject(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scorer := &Scorer{Repo: ai, Analyzer: an, Bus: bus, Workers: 1}
+	if err := scorer.Drain(ctx, rawCons); err != nil {
+		t.Fatal(err)
+	}
+	if got := scorer.Stats.Scored.Load(); got != int64(len(fixture)) || scorer.Stats.Failed.Load() != 0 {
+		t.Fatalf("scored = %d failed = %d", got, scorer.Stats.Failed.Load())
+	}
+	var withEmb int
+	if err := pool.QueryRow(ctx, `SELECT count(embedding) FROM items`).Scan(&withEmb); err != nil || withEmb != 0 {
+		t.Fatalf("embeddings = %d (%v), want 0", withEmb, err)
+	}
+
+	scoredCons, err := bus.Consumer(ctx, "it-deduper-none", bus.ScoredSubject(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ded := &Deduper{Repo: ai, Analyzer: an, Bus: bus}
+	if err := ded.Drain(ctx, scoredCons); err != nil {
+		t.Fatal(err)
+	}
+	if ded.Stats.Processed != len(fixture) || ded.Stats.Failed != 0 || ded.Stats.NewClusters != len(fixture) || model.dedupCalls != 0 {
+		t.Fatalf("dedup stats = %+v, dedup LLM calls = %d", ded.Stats, model.dedupCalls)
+	}
+	if pending, err := ai.PendingDedup(ctx, 100); err != nil || len(pending) != 0 {
+		t.Fatalf("pending dedup = %v (%v)", pending, err)
+	}
+	var rows, dups, deduped int
+	if err := pool.QueryRow(ctx, `SELECT count(*), COALESCE(sum(duplicate_count), 0) FROM feed_view`).Scan(&rows, &dups); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM items WHERE status = 'deduped' AND cluster_id IS NOT NULL`).Scan(&deduped); err != nil {
+		t.Fatal(err)
+	}
+	if rows != len(fixture) || dups != 0 || deduped != len(fixture) {
+		t.Fatalf("feed_view rows = %d dups = %d deduped items = %d", rows, dups, deduped)
+	}
+}
