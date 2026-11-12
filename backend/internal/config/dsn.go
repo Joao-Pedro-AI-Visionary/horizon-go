@@ -30,7 +30,7 @@ func getenv(k, def string) string {
 // local development container defaults.
 func DatabaseURL() string {
 	if v := os.Getenv("DATABASE_URL"); v != "" {
-		return v
+		return stripUnsupported(v)
 	}
 	u := url.URL{
 		Scheme:   "postgres",
@@ -39,5 +39,23 @@ func DatabaseURL() string {
 		Path:     "/" + getenv("PGDATABASE", defaultPGDatabase),
 		RawQuery: "sslmode=disable",
 	}
+	return u.String()
+}
+
+// stripUnsupported drops URL parameters pgx v5 does not understand and would
+// otherwise send to the server as runtime settings, failing the connection.
+// Neon's copied connection strings end in "&channel_binding=require"; pgx
+// still authenticates with SCRAM over TLS (sslmode=require) without it.
+func stripUnsupported(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
+		return dsn
+	}
+	q := u.Query()
+	if !q.Has("channel_binding") {
+		return dsn
+	}
+	q.Del("channel_binding")
+	u.RawQuery = q.Encode()
 	return u.String()
 }

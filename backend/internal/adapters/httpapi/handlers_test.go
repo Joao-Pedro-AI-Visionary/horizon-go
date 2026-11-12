@@ -286,3 +286,33 @@ func TestOneCollectionAtATime(t *testing.T) {
 		t.Errorf("first run: %d", code)
 	}
 }
+
+type countingCollector struct{ n int }
+
+func (c *countingCollector) Collect(context.Context, time.Time) (app.Report, error) {
+	c.n++
+	return app.Report{RunID: "r"}, nil
+}
+func (c *countingCollector) CollectSource(context.Context, int64, time.Time) (app.Report, error) {
+	c.n++
+	return app.Report{RunID: "r"}, nil
+}
+
+func TestCollectCooldown(t *testing.T) {
+	s, _, srv := newTestServer(t)
+	col := &countingCollector{}
+	s.Collector, s.CollectCooldown = col, time.Hour
+	if resp, body := do(t, "POST", srv.URL+"/api/pipeline/run", ""); resp.StatusCode != 200 {
+		t.Fatalf("first run: %d %s", resp.StatusCode, body)
+	}
+	resp, _ := do(t, "POST", srv.URL+"/api/pipeline/run", "")
+	if resp.StatusCode != 429 || resp.Header.Get("Retry-After") == "" {
+		t.Errorf("second run: %d %v", resp.StatusCode, resp.Header)
+	}
+	if resp, _ := do(t, "POST", srv.URL+"/api/sources/1/fetch", ""); resp.StatusCode != 429 {
+		t.Errorf("source fetch inside the cooldown: %d", resp.StatusCode)
+	}
+	if col.n != 1 {
+		t.Errorf("collector ran %d times", col.n)
+	}
+}

@@ -69,9 +69,14 @@ type Server struct {
 	// Window is how far back a triggered collection looks (default 24h).
 	Window         time.Duration
 	AllowedOrigins []string
-	Log            *slog.Logger
+	// CollectCooldown, when set, rejects a triggered collection (429 with
+	// Retry-After) that starts sooner than this after the previous one. It
+	// keeps a public deploy from burning the free model quotas.
+	CollectCooldown time.Duration
+	Log             *slog.Logger
 
-	collecting sync.Mutex
+	collecting  sync.Mutex
+	lastCollect time.Time // guarded by collecting
 }
 
 func (s *Server) log() *slog.Logger {
