@@ -5,6 +5,9 @@ dist/
 *.exe
 bin/
 .env
+.env.*
+!.env.example
+!.env.production.example
 test-results/
 playwright-report/
 coverage.out

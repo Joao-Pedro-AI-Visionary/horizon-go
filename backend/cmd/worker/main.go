@@ -9,11 +9,13 @@
 //	worker --once --skip-collect            score and dedup what is in the database
 //	worker --once --ai=false                collect only (Phase 1 behaviour)
 //	worker [--interval 30m] [--digest=true] collect periodically, run every stage continuously and the digest cron
+//	worker --interval 0                      never collect on its own: collections come from POST /api/pipeline/run
 //
 // DATABASE_URL, NATS_URL, OLLAMA_URL, LLM_MODEL, LLM_NUM_CTX and EMBED_MODEL override the
 // local defaults from CLAUDE.md. LLM_PROVIDER=groq and EMBED_PROVIDER=none switch
 // to the hosted free-tier setup used in production (see models.go and docs/deploy.md).
-// COLLECT_INTERVAL overrides --interval.
+// COLLECT_INTERVAL overrides --interval ("0" or "off" disables the worker's own
+// collections; the hosted deploy triggers them on a schedule instead).
 package main
 
 import (
@@ -59,10 +61,10 @@ type aiOptions struct {
 
 func main() {
 	once := flag.Bool("once", false, "run a single collect+persist cycle and exit")
-	seed := flag.Bool("seed", false, "insert the default sources (HN, r/golang, Go blog) if missing")
+	seed := flag.Bool("seed", false, "insert the default sources when the sources table is empty")
 	window := flag.Duration("window", 24*time.Hour, "only keep items published within this window")
 	timeout := flag.Duration("timeout", app.DefaultSourceTimeout, "per-source fetch timeout")
-	interval := flag.Duration("interval", envDuration("COLLECT_INTERVAL", 30*time.Minute), "collect interval in continuous mode (env COLLECT_INTERVAL)")
+	interval := flag.Duration("interval", collectInterval(os.Getenv("COLLECT_INTERVAL"), 30*time.Minute), "collect interval in continuous mode, 0 = never (env COLLECT_INTERVAL, \"off\" = 0)")
 	withDigest := flag.Bool("digest", true, "continuous mode: run the digest cron")
 	var o aiOptions
 	flag.BoolVar(&o.enabled, "ai", true, "run the scoring and dedup stages")
@@ -93,6 +95,21 @@ func getenv(k, def string) string {
 
 func envDuration(k string, def time.Duration) time.Duration {
 	if d, err := time.ParseDuration(os.Getenv(k)); err == nil && d > 0 {
+		return d
+	}
+	return def
+}
+
+// collectInterval parses COLLECT_INTERVAL: a duration, or "0"/"off" for no
+// periodic collection; anything else falls back to def.
+func collectInterval(v string, def time.Duration) time.Duration {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "":
+		return def
+	case "0", "off", "none", "false":
+		return 0
+	}
+	if d, err := time.ParseDuration(v); err == nil && d >= 0 {
 		return d
 	}
 	return def
@@ -161,6 +178,12 @@ func run(ctx context.Context, log *slog.Logger, once, seed bool, window, timeout
 	defer bus.Close()
 
 	sources := postgres.SourceRepo{DB: pool}
+	if seed {
+		seed, err = seedNeeded(ctx, sources)
+		if err != nil {
+			return fmt.Errorf("seed: %w", err)
+		}
+	}
 	if seed {
 		for _, s := range ingest.DefaultSources() {
 			row, err := sources.Ensure(ctx, s)
@@ -241,6 +264,11 @@ func run(ctx context.Context, log *slog.Logger, once, seed bool, window, timeout
 			}
 		}()
 	}
+	if interval <= 0 {
+		log.Info("periodic collection off: waiting for POST /api/pipeline/run")
+		<-ctx.Done()
+		return nil
+	}
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
 	for {
@@ -255,6 +283,16 @@ func run(ctx context.Context, log *slog.Logger, once, seed bool, window, timeout
 		case <-tick.C:
 		}
 	}
+}
+
+// seedNeeded is true only for an empty sources table, so sources removed or
+// edited from the dashboard are not brought back on every start.
+func seedNeeded(ctx context.Context, sources postgres.SourceRepo) (bool, error) {
+	rows, err := sources.List(ctx, false)
+	if err != nil {
+		return false, err
+	}
+	return len(rows) == 0, nil
 }
 
 func printReport(ctx context.Context, pool *pgxpool.Pool, res ingest.Result) {

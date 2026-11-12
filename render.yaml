@@ -25,6 +25,10 @@ services:
         sync: false
       - key: HORIZON_CORS_ORIGINS # e.g. https://horizon-web.vercel.app
         sync: false
+      - key: HORIZON_ADMIN_TOKEN # bearer token for every write; unset = writes refused (503)
+        sync: false
+      - key: HORIZON_ENV
+        value: production
       # --- models ---
       - key: LLM_PROVIDER
         value: groq
@@ -39,12 +43,12 @@ services:
       # --- low memory / free-tier friendly ---
       - key: SCORE_WORKERS
         value: "1"
-      - key: COLLECT_INTERVAL
-        value: 30m
+      - key: COLLECT_INTERVAL # off: GitHub Actions triggers 07:30 and 16:30 BRT
+        value: "off"
       - key: COLLECT_COOLDOWN
         value: 10m
-      - key: COLLECT_WINDOW
-        value: 24h
+      - key: COLLECT_WINDOW # covers the 15 h gap between the two daily runs
+        value: 16h
       - key: SOURCE_TIMEOUT
         value: 30s
       - key: WORKER_SEED

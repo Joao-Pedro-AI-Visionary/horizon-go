@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jpdev/horizon-go/internal/adapters/llm/cloudflare"
 	"github.com/jpdev/horizon-go/internal/adapters/llm/ollama"
@@ -64,6 +65,19 @@ func TestBuildModelsErrors(t *testing.T) {
 	} {
 		if _, _, err := buildModels(envOf(env), nil); err == nil || !strings.Contains(err.Error(), "_") {
 			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+}
+
+func TestCollectInterval(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		want time.Duration
+	}{
+		{"", 30 * time.Minute}, {"off", 0}, {"0", 0}, {"OFF", 0}, {"12h", 12 * time.Hour}, {"junk", 30 * time.Minute},
+	} {
+		if got := collectInterval(c.in, 30*time.Minute); got != c.want {
+			t.Errorf("%q: got %v want %v", c.in, got, c.want)
 		}
 	}
 }
