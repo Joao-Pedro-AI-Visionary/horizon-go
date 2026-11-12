@@ -50,7 +50,8 @@ type result struct {
 }
 
 // Run executes every job concurrently. A failing or slow source is recorded
-// as an error in fetch_runs and does not affect the others.
+// as an error in fetch_runs and does not affect the others; a source that
+// returns a domain.SkippedError is recorded as skipped.
 func (c *Collector) Run(ctx context.Context, jobs []Job, since time.Time) (Report, error) {
 	log := c.Log
 	if log == nil {
@@ -134,6 +135,11 @@ func (c *Collector) fetchOne(ctx context.Context, job Job, since time.Time, time
 	sctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	items, err := job.Source.Fetch(sctx, since)
+	var skipped *domain.SkippedError
+	if errors.As(err, &skipped) {
+		res.run.Status, res.run.Error = domain.FetchSkipped, skipped.Error()
+		return res
+	}
 	if err != nil {
 		res.run.Status, res.run.Error = domain.FetchError, err.Error()
 		return res

@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jpdev/horizon-go/internal/domain"
 )
 
 var now = time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
@@ -33,7 +35,7 @@ func TestFetchMapsPostsAndSendsUserAgent(t *testing.T) {
 	defer srv.Close()
 
 	src := New(Params{SourceID: 3, Name: "r/golang", BaseURL: srv.URL, Client: srv.Client(),
-		Config: Config{Subreddit: "golang", Sort: "hot", Limit: 25, MinScore: 5}})
+		Config: Config{Subreddit: "golang", Sort: "hot", Limit: 25, MinScore: 5, UseJSON: true}})
 	items, err := src.Fetch(context.Background(), now.Add(-24*time.Hour))
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
@@ -69,7 +71,7 @@ func TestTopSortSendsTimeFilter(t *testing.T) {
 		fmt.Fprint(w, `{"data":{"children":[]}}`)
 	}))
 	defer srv.Close()
-	src := New(Params{Name: "r/xx", BaseURL: srv.URL, Client: srv.Client(), Config: Config{Subreddit: "xx", Sort: "top"}})
+	src := New(Params{Name: "r/xx", BaseURL: srv.URL, Client: srv.Client(), Config: Config{Subreddit: "xx", Sort: "top", UseJSON: true}})
 	if _, err := src.Fetch(context.Background(), now); err != nil {
 		t.Fatal(err)
 	}
@@ -78,65 +80,158 @@ func TestTopSortSendsTimeFilter(t *testing.T) {
 	}
 }
 
-func TestRetriesOn429(t *testing.T) {
+func atom() string { return fmt.Sprintf(redditAtom, now.Add(-time.Hour).Format(time.RFC3339)) }
+
+func TestDefaultsToRSSWithoutCallingJSON(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.UserAgent() != UserAgent {
+			t.Errorf("user agent = %q", r.UserAgent())
+		}
+		fmt.Fprint(w, atom())
+	}))
+	defer srv.Close()
+	src := New(Params{SourceID: 4, Name: "r/golang", BaseURL: srv.URL, Client: srv.Client(), Config: Config{Subreddit: "golang"}})
+	items, err := src.Fetch(context.Background(), now.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(paths) != 1 || paths[0] != "/r/golang/hot/.rss" {
+		t.Fatalf("requests = %v, want only the hot feed", paths)
+	}
+	if len(items) != 2 || items[0].ExternalID != "aaa" || items[0].SourceID != 4 {
+		t.Fatalf("items: %+v", items)
+	}
+}
+
+func TestRetriesOnceOn429HonoringRetryAfter(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if calls.Add(1) == 1 {
-			w.Header().Set("Retry-After", "0")
+			w.Header().Set("Retry-After", "1")
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
-		fmt.Fprint(w, listingJSON(now.Add(-time.Hour).Unix(), now.Add(-time.Hour).Unix()))
+		fmt.Fprint(w, atom())
 	}))
 	defer srv.Close()
 	src := New(Params{Name: "r/golang", BaseURL: srv.URL, Client: srv.Client(), Config: Config{Subreddit: "golang"}})
+	start := time.Now()
 	items, err := src.Fetch(context.Background(), now.Add(-24*time.Hour))
 	if err != nil {
 		t.Fatalf("Fetch after 429: %v", err)
 	}
-	if calls.Load() != 2 || len(items) == 0 {
+	if calls.Load() != 2 || len(items) != 2 {
 		t.Fatalf("calls=%d items=%d", calls.Load(), len(items))
+	}
+	if waited := time.Since(start); waited < 900*time.Millisecond {
+		t.Fatalf("did not honor Retry-After: waited %v", waited)
 	}
 }
 
-func TestPersistent429ReturnsRateLimited(t *testing.T) {
+func TestPersistent429IsSkippedAndCoolsDown(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		w.Header().Set("Retry-After", "0")
+		w.Header().Set("X-Ratelimit-Reset", "120")
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	defer srv.Close()
 	src := New(Params{Name: "r/golang", BaseURL: srv.URL, Client: srv.Client(), Config: Config{Subreddit: "golang"}})
 	_, err := src.Fetch(context.Background(), now)
-	if !errors.Is(err, ErrRateLimited) {
-		t.Fatalf("want ErrRateLimited, got %v", err)
+	var sk *domain.SkippedError
+	if !errors.As(err, &sk) {
+		t.Fatalf("want SkippedError, got %v", err)
 	}
 	if calls.Load() != int32(maxAttempts) {
 		t.Fatalf("calls = %d, want %d", calls.Load(), maxAttempts)
 	}
-}
-
-func TestRetryAfterWaitIsCapped(t *testing.T) {
-	if d := retryAfter("3600", 2*time.Second); d != 2*time.Second {
-		t.Fatalf("cap not applied: %v", d)
-	}
-	if d := retryAfter("", 5*time.Second); d != defaultRetryAfter {
-		t.Fatalf("missing header: %v", d)
-	}
-	if d := retryAfter("1", 5*time.Second); d != time.Second {
-		t.Fatalf("seconds: %v", d)
+	if !strings.Contains(sk.Error(), "rate limited") || !strings.Contains(sk.Error(), "retry after 0s") {
+		t.Fatalf("message = %q", sk.Error())
 	}
 }
 
-func TestForbiddenIsError(t *testing.T) {
+func TestLongRetryAfterSkipsWithoutRetryAndRemembersCooldown(t *testing.T) {
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
+		calls.Add(1)
+		w.Header().Set("Retry-After", "90")
+		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	defer srv.Close()
 	src := New(Params{Name: "r/golang", BaseURL: srv.URL, Client: srv.Client(), Config: Config{Subreddit: "golang"}})
-	if _, err := src.Fetch(context.Background(), now); err == nil || !strings.Contains(err.Error(), "403") {
-		t.Fatalf("want 403 error, got %v", err)
+	_, err := src.Fetch(context.Background(), now)
+	var sk *domain.SkippedError
+	if !errors.As(err, &sk) || sk.RetryAfter != 90*time.Second || sk.Error() != "reddit rate limited (429); retry after 90s" {
+		t.Fatalf("want 90s skip, got %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("must not retry when the wait exceeds the cap: calls = %d", calls.Load())
+	}
+	// A new source (sources are rebuilt every run) inside the cooldown must
+	// not call Reddit at all.
+	again := New(Params{Name: "r/golang", BaseURL: srv.URL, Client: srv.Client(), Config: Config{Subreddit: "golang"}})
+	if _, err := again.Fetch(context.Background(), now); !errors.As(err, &sk) || !strings.Contains(sk.Error(), "cooldown") {
+		t.Fatalf("want cooldown skip, got %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("called Reddit during cooldown: calls = %d", calls.Load())
+	}
+}
+
+func TestRetryAfterHeaders(t *testing.T) {
+	ref := time.Date(2026, 11, 12, 18, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name  string
+		h     http.Header
+		want  time.Duration
+		known bool
+	}{
+		{"seconds", http.Header{"Retry-After": {"7"}}, 7 * time.Second, true},
+		{"http date", http.Header{"Retry-After": {ref.Add(45 * time.Second).Format(http.TimeFormat)}}, 45 * time.Second, true},
+		{"past date", http.Header{"Retry-After": {ref.Add(-time.Minute).Format(http.TimeFormat)}}, 0, true},
+		{"ratelimit reset", http.Header{"X-Ratelimit-Reset": {"12.0"}}, 12 * time.Second, true},
+		{"none", http.Header{}, defaultRetryAfter, false},
+		{"garbage", http.Header{"Retry-After": {"soon"}}, defaultRetryAfter, false},
+	}
+	for _, c := range cases {
+		got, known := retryAfter(c.h, ref)
+		if got != c.want || known != c.known {
+			t.Errorf("%s: got %v/%v, want %v/%v", c.name, got, known, c.want, c.known)
+		}
+	}
+}
+
+func TestForbiddenFeedIsSkipped(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+	src := New(Params{Name: "r/golang", BaseURL: srv.URL, Client: srv.Client(), Config: Config{Subreddit: "golang", UseJSON: true}})
+	_, err := src.Fetch(context.Background(), now)
+	var sk *domain.SkippedError
+	if !errors.As(err, &sk) || !strings.Contains(sk.Error(), "403") {
+		t.Fatalf("want 403 skip, got %v", err)
+	}
+	if calls.Load() != 2 { // json, then the feed
+		t.Fatalf("calls = %d", calls.Load())
+	}
+}
+
+func TestServerErrorIsStillAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	src := New(Params{Name: "r/golang", BaseURL: srv.URL, Client: srv.Client(), Config: Config{Subreddit: "golang"}})
+	_, err := src.Fetch(context.Background(), now)
+	var sk *domain.SkippedError
+	if err == nil || errors.As(err, &sk) || !strings.Contains(err.Error(), "500") {
+		t.Fatalf("want plain 500 error, got %v", err)
 	}
 }
 
@@ -176,7 +271,7 @@ func TestFallsBackToRSSWhenJSONBlocked(t *testing.T) {
 		fmt.Fprintf(w, redditAtom, now.Add(-time.Hour).Format(time.RFC3339))
 	}))
 	defer srv.Close()
-	src := New(Params{SourceID: 7, Name: "r/golang", BaseURL: srv.URL, Client: srv.Client(), Config: Config{Subreddit: "golang", Sort: "new"}})
+	src := New(Params{SourceID: 7, Name: "r/golang", BaseURL: srv.URL, Client: srv.Client(), Config: Config{Subreddit: "golang", Sort: "new", UseJSON: true}})
 	items, err := src.Fetch(context.Background(), now.Add(-24*time.Hour))
 	if err != nil {
 		t.Fatalf("Fetch with RSS fallback: %v", err)

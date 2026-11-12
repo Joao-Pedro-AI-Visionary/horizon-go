@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -127,6 +128,30 @@ func TestCollectorFanOutDedupAndReport(t *testing.T) {
 	}
 	if byID[3].Error != context.DeadlineExceeded.Error() {
 		t.Fatalf("slow source error = %q", byID[3].Error)
+	}
+}
+
+func TestCollectorRecordsSkippedSourceAsNonFatal(t *testing.T) {
+	runs := &fakeRuns{}
+	skip := fmt.Errorf("wrapped: %w", &domain.SkippedError{Reason: "reddit rate limited (429); retry after 60s", RetryAfter: time.Minute})
+	jobs := []Job{
+		{SourceID: 1, Source: fakeSource{name: "ok", items: []domain.Item{{SourceID: 1, ExternalID: "a", URL: "https://ex.com/a", Title: "A"}}}},
+		{SourceID: 2, Source: fakeSource{name: "r/golang", err: skip}},
+	}
+	rep, err := (&Collector{Publisher: &fakePublisher{}, Runs: runs}).Run(context.Background(), jobs, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("a skipped source must not fail the run: %v", err)
+	}
+	if rep.Published != 1 {
+		t.Fatalf("other sources must still publish: %+v", rep)
+	}
+	for _, r := range runs.runs {
+		if r.SourceID == 2 && (r.Status != domain.FetchSkipped || r.Error != "reddit rate limited (429); retry after 60s" || r.ItemCount != 0) {
+			t.Fatalf("skipped run: %+v", r)
+		}
+		if r.SourceID == 1 && r.Status != domain.FetchOK {
+			t.Fatalf("ok run: %+v", r)
+		}
 	}
 }
 
