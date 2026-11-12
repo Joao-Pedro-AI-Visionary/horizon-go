@@ -6,7 +6,9 @@
 //	                (defaults: local dev container, see .env.example)
 //	NATS_URL        nats://localhost:4230
 //	API_ADDR        :8080
-//	CORS_ORIGINS    http://localhost:5173,http://127.0.0.1:5173 (comma separated)
+//	HORIZON_CORS_ORIGINS  origins allowed to call the API from the browser
+//	                (comma separated; CORS_ORIGINS is still accepted). Default:
+//	                the horizon-web dev and preview servers, see defaultCORSOrigins.
 //	COLLECT_WINDOW  24h   how far back a triggered collection looks
 //	SOURCE_TIMEOUT  30s   per-source fetch timeout
 //
@@ -42,6 +44,29 @@ func getenv(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// defaultCORSOrigins are the horizon-web (separate repo) Vite dev and preview
+// servers.
+const defaultCORSOrigins = "http://localhost:5173,http://localhost:4173,http://127.0.0.1:5173,http://127.0.0.1:4173"
+
+// corsOrigins reads HORIZON_CORS_ORIGINS (or the older CORS_ORIGINS) as a
+// comma-separated list, dropping blanks and trailing slashes.
+func corsOrigins(lookup func(string) string) []string {
+	raw := lookup("HORIZON_CORS_ORIGINS")
+	if strings.TrimSpace(raw) == "" {
+		raw = lookup("CORS_ORIGINS")
+	}
+	if strings.TrimSpace(raw) == "" {
+		raw = defaultCORSOrigins
+	}
+	var out []string
+	for _, o := range strings.Split(raw, ",") {
+		if o = strings.TrimRight(strings.TrimSpace(o), "/"); o != "" {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 func envDuration(k string, def time.Duration) time.Duration {
@@ -93,7 +118,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		ValidateCron:   digest.ValidateCron,
 		Checks:         []httpapi.Check{{Name: "postgres", Fn: read.Ping}, {Name: "nats", Fn: bus.Ping}},
 		Window:         envDuration("COLLECT_WINDOW", 24*time.Hour),
-		AllowedOrigins: strings.Split(getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"), ","),
+		AllowedOrigins: corsOrigins(os.Getenv),
 		Log:            log,
 	}
 	hs := &http.Server{

@@ -1,22 +1,21 @@
-# Starts Horizon for local viewing, detached from the calling shell: the
-# containers (docker in WSL), cmd/api, cmd/worker and vite preview of the built
-# dashboard on http://localhost:4173 (proxies /api and /healthz to :8080).
+# Starts the Horizon backend locally, detached from the calling shell: the
+# containers (docker in WSL), migrations, cmd/api on http://localhost:8080 and
+# cmd/worker. The dashboard is a separate repo (horizon-web,
+# https://github.com/Joao-Pedro-AI-Visionary/horizon-web): run its
+# `npm run dev` (:5173) or `npm run preview` (:4173) against this API.
 # Processes are created through WMI (Win32_Process.Create), so they are not
 # children of this shell and survive when the terminal or agent session ends.
 # PIDs go to .runs/local-pids.json; stop them with scripts\stop-local.ps1.
 #   .\scripts\start-local.ps1
 . "$PSScriptRoot\_env.ps1"
 $bin = "$Root\bin"
-$web = "$Root\web"
 $runs = "$Root\.runs"
 $pidFile = "$runs\local-pids.json"
 New-Item -ItemType Directory -Force $bin, $runs | Out-Null
 
 if (Test-Path $pidFile) { throw "$pidFile exists: run scripts\stop-local.ps1 first" }
-foreach ($port in 8080, 4173) {
-    if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) {
-        throw "port $port is already in use"
-    }
+if (Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue) {
+    throw 'port 8080 is already in use'
 }
 
 Invoke-Step 'containers' { wsl docker start horizon-pg horizon-nats }
@@ -27,12 +26,6 @@ try {
     Invoke-Step 'build worker' { go build -o "$bin\worker.exe" ./cmd/worker }
 }
 finally { Pop-Location }
-Push-Location $web
-try { Invoke-Step 'build web' { npm run build } }
-finally { Pop-Location }
-
-$node = (Get-Command node).Source
-
 # detached runs `cmd /c "<command> > log 2>&1"` through WMI and returns the
 # wrapper cmd.exe and the real process (its child) with their start times.
 function Start-Detached([string]$Name, [string]$Command, [string]$Dir) {
@@ -61,16 +54,15 @@ function Start-Detached([string]$Name, [string]$Command, [string]$Dir) {
 
 $procs = @(
     (Start-Detached 'api' "`"$bin\api.exe`"" $Root),
-    (Start-Detached 'worker' "`"$bin\worker.exe`"" $Root),
-    (Start-Detached 'preview' "`"$node`" node_modules\vite\bin\vite.js preview --port 4173 --strictPort" $web)
+    (Start-Detached 'worker' "`"$bin\worker.exe`"" $Root)
 )
 $procs | ConvertTo-Json | Set-Content -Encoding utf8 $pidFile
 
 $deadline = (Get-Date).AddSeconds(60)
 while ($true) {
-    try { if ((Invoke-WebRequest -UseBasicParsing http://localhost:4173/healthz).StatusCode -eq 200) { break } } catch {}
-    if ((Get-Date) -gt $deadline) { throw 'http://localhost:4173/healthz did not answer within 60s (logs in .runs\)' }
+    try { if ((Invoke-WebRequest -UseBasicParsing http://localhost:8080/healthz).StatusCode -eq 200) { break } } catch {}
+    if ((Get-Date) -gt $deadline) { throw 'http://localhost:8080/healthz did not answer within 60s (logs in .runs\)' }
     Start-Sleep -Milliseconds 500
 }
 $procs | Format-Table name, pid, exe, wrapperPid -AutoSize
-Write-Host 'Horizon: http://localhost:4173  (API: http://localhost:8080)  stop: .\scripts\stop-local.ps1' -ForegroundColor Yellow
+Write-Host 'Horizon API: http://localhost:8080  (dashboard: horizon-web)  stop: .\scripts\stop-local.ps1' -ForegroundColor Yellow
