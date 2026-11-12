@@ -1,0 +1,10 @@
+.git
+.claude
+assets
+docs
+scripts
+**/*.md
+!README.md
+.env
+.env.*
+**/node_modules

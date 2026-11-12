@@ -1,0 +1,36 @@
+# Optional free "cron" for the Render free service, which sleeps after 15 min
+# without inbound traffic (the worker's own 30 min ticker stops with it).
+# Every run wakes the service (/healthz) and triggers a collection.
+#
+# Disabled by default: only manual runs. To enable, set the repository
+# variable HORIZON_API_URL (Settings > Secrets and variables > Actions >
+# Variables, e.g. https://horizon-api.onrender.com) and uncomment "schedule".
+# No secrets are needed. See docs/deploy.md.
+name: wake-and-collect
+
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: "*/30 * * * *" # every 30 min (GitHub may delay scheduled runs)
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: ${{ vars.HORIZON_API_URL != '' }}
+    steps:
+      - name: Wake the service
+        run: |
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS --max-time 90 "${{ vars.HORIZON_API_URL }}/healthz"; then exit 0; fi
+            sleep 15
+          done
+          exit 1
+      - name: Trigger a collection
+        # 409 = one already running, 429 = inside COLLECT_COOLDOWN: both fine.
+        run: |
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 180 -X POST "${{ vars.HORIZON_API_URL }}/api/pipeline/run")
+          echo "pipeline/run -> $code"
+          case "$code" in 200|409|429|502) exit 0;; *) exit 1;; esac
