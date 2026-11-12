@@ -1,6 +1,6 @@
 # Design — Radar by JpDev (fases R1 e R2)
 
-Redesign editorial do front Vue 3 (`web/`). Referência estudada: Tubik, *The Alabama Solution* — páginas editoriais para a investigação da HBO (Webby 2026). As imagens do case foram baixadas para `.runs/ref/` (fora do git) só para estudo; nada da referência foi copiado: marca, cores, fontes e conteúdo são do Radar/JpDev.
+Redesign editorial do front Vue 3, hoje no repo [horizon-web](https://github.com/Joao-Pedro-AI-Visionary/horizon-web) (cópia deste documento em `docs/DESIGN.md` de lá). Referência estudada: Tubik, *The Alabama Solution* — páginas editoriais para a investigação da HBO (Webby 2026). As imagens do case foram baixadas para `.runs/ref/` (fora do git) só para estudo; nada da referência foi copiado: marca, cores, fontes e conteúdo são do Radar/JpDev.
 
 ## 1. O que a referência ensina
 
@@ -32,7 +32,7 @@ Nada foi inventado: todo número vem de `/api/feed`, `/api/sources`, `/api/setti
 
 ## 3. Tokens
 
-**Cores** (`web/src/style.css`, `@theme`)
+**Cores** (`src/style.css` (horizon-web), `@theme`)
 
 | Token | Valor | Uso |
 |---|---|---|
@@ -125,7 +125,7 @@ Segunda referência, aplicada **por cima** do R1 sem trocar a linguagem editoria
 | **Gradientes suaves por categoria** | Cartão de fonte com `--grad-<kind>`: amarelo (Hacker News), laranja (Reddit), neutro (RSS), opacidade ≤ 11% | `kind` da fonte |
 | **Botão primário preto sobre superfície clara** | Faixa amarela "Faixa ativa · 28 out → 03 nov" com botão preto **Limpar faixa** (`surface-primary` + `btn-ink`). Sobre o escuro, o primário continua amarelo | — |
 
-## 2. Tokens novos (CSS variables em `web/src/style.css`, `:root`)
+## 2. Tokens novos (CSS variables em `src/style.css` (horizon-web), `:root`)
 
 | Token | Valor | Uso |
 |---|---|---|
@@ -158,7 +158,7 @@ A regra global do R1 (durações a 0,01ms, sem delay) cobre os widgets: a pílul
 
 ## 5. Testes
 
-`web/e2e/widgets.spec.ts`, nos três viewports:
+`e2e/widgets.spec.ts` (horizon-web), nos três viewports:
 - **pílula**: assentada sob a opção pressionada (x e largura com tolerância de 1px), seleção pelas setas, períodos das métricas;
 - **scrubber pelo teclado**: semântica de slider, rótulo ao vivo, `from` aplicado na URL e na API, total do feed igual à contagem do histograma (e à soma das barras), teclas que voltam ao início não aplicam nada, botão preto sobre o amarelo e "Limpar faixa";
 - **scrubber pelo ponteiro**: arrasto com rótulo mudando durante o gesto, clique simples na alça sem efeito, toque no trilho como alternativa, posição de rolagem preservada;

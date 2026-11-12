@@ -2,7 +2,7 @@
 # .runs/local-pids.json. A PID is stopped only if it still belongs to the same
 # process (same executable and start time), so a reused PID is never killed.
 # It never kills processes by name.
-#   .\scripts\stop-local.ps1               # api, worker, vite preview
+#   .\scripts\stop-local.ps1               # api, worker (and a vite preview saved by older versions)
 #   .\scripts\stop-local.ps1 -Containers   # also stops horizon-pg and horizon-nats
 param([switch]$Containers)
 $ErrorActionPreference = 'Stop'

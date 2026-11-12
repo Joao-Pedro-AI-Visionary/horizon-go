@@ -1,6 +1,6 @@
 # Horizon-Go — regras para agentes
 
-Projeto: reescrita em Go + Vue 3 do Thysrael/Horizon (MIT). Leia `PLANO.md`. O código Python original está em `upstream/` (somente leitura, referência; não versionado).
+Projeto: reescrita em Go + Vue 3 do Thysrael/Horizon (MIT). Leia `PLANO.md`. Este repo é só o backend em Go (`backend/`); o front Vue 3 fica em https://github.com/Joao-Pedro-AI-Visionary/horizon-web e chama esta API (proxy do Vite ou `VITE_API_URL` + `HORIZON_CORS_ORIGINS`). O código Python original está em `upstream/` (somente leitura, referência; não versionado).
 
 ## Diretrizes de colaboração técnica
 - Crítica fundamentada: se o pedido/plano tiver falha técnica, aponte e proponha a alternativa melhor, com motivo.
@@ -9,8 +9,8 @@ Projeto: reescrita em Go + Vue 3 do Thysrael/Horizon (MIT). Leia `PLANO.md`. O c
 
 ## Regras de qualidade
 - Todo elemento do front tem backend real funcionando. Sem mock, sem botão morto, sem dado fake no front.
-- Testes Go (unit + integração com Postgres real) e e2e Playwright cobrindo cada tela e ação, em desktop (1440x900), tablet (834x1112) e mobile (390x844).
-- Visual JpDev: preto (#0B0B0B/#141414) + amarelo (#FFD400) primário; laranja (#FF7A00) só apoio. Logo: `assets/jpdev-logo.png` (não redesenhar). Tipografia: Space Grotesk (títulos) + Inter (texto) + JetBrains Mono (números).
+- Testes Go (unit + integração com Postgres real). O e2e Playwright (cada tela e ação, em desktop 1440x900, tablet 834x1112 e mobile 390x844) fica no horizon-web e roda contra esta API; mudança de contrato da API exige ajuste lá (`src/api/types.ts`).
+- Visual JpDev: preto (#0B0B0B/#141414) + amarelo (#FFD400) primário; laranja (#FF7A00) só apoio. Logo: `assets/jpdev-logo.png` (não redesenhar; o horizon-web usa uma cópia byte a byte em `public/`). Tipografia: Space Grotesk (títulos) + Inter (texto) + JetBrains Mono (números).
 - IA: Ollama local em http://localhost:11434 — LLM `qwen3:14b` (use `"think": false` / formato json), embeddings `nomic-embed-text` (768 dims). Nunca invente chave de API.
 
 ## Infra local (já rodando, docker no WSL)

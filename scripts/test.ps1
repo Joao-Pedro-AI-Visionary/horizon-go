@@ -1,4 +1,5 @@
-# Static checks + unit tests for backend, typecheck + build for web.
+# Static checks + unit tests for the backend. The dashboard's build and e2e
+# live in horizon-web (https://github.com/Joao-Pedro-AI-Visionary/horizon-web).
 . "$PSScriptRoot\_env.ps1"
 Push-Location "$Root\backend"
 try {
@@ -6,7 +7,4 @@ try {
     Invoke-Step 'go vet'   { go vet ./... }
     Invoke-Step 'go test'  { go test ./... }
 }
-finally { Pop-Location }
-Push-Location "$Root\web"
-try { Invoke-Step 'web build' { npm run build } }
 finally { Pop-Location }
