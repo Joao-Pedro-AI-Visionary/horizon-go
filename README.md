@@ -154,6 +154,27 @@ docker compose down            # para; o volume pgdata é preservado
 O compose sobe só a infra; API e worker rodam no host (o Vite roda no clone do horizon-web). O Ollama também fica no host
 (`http://localhost:11434`).
 
+## Deploy grátis (Render + Neon + Groq + Cloudflare)
+
+O backend inteiro (API, worker e NATS JetStream) roda num **único container**
+no plano free do Render. O banco é Postgres com pgvector no Neon free, a
+pontuação usa o Groq (`openai/gpt-oss-20b`) e os embeddings usam o Cloudflare
+Workers AI (`@cf/baai/bge-base-en-v1.5`, 768 dims, mesmo tamanho da coluna
+atual). O front vai pra Vercel.
+
+- `Dockerfile` + `deploy/nats.conf`: imagem distroless. O `cmd/supervise` sobe
+  o nats-server, roda as migrations, sobe o worker e a API e derruba o
+  container se algum processo morrer.
+- `render.yaml`: Blueprint com health check `/healthz` e segredos
+  `sync: false`.
+- `.env.production.example`: todas as variáveis de produção.
+- `docs/deploy.md`: passo a passo (Neon, Groq, Cloudflare, Render, Vercel),
+  limites grátis verificados e como coletar com o serviço dormindo.
+
+Os provedores são escolhidos por env: `LLM_PROVIDER=ollama|groq|openai` e
+`EMBED_PROVIDER=ollama|cloudflare|none`. Sem nada definido, tudo continua no
+Ollama local.
+
 ## Testes
 
 ```powershell
