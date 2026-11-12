@@ -10,7 +10,8 @@ import (
 // Writes (every method other than GET, HEAD and OPTIONS under /api) need
 // "Authorization: Bearer <token>", where token is either a session token from
 // POST /api/auth/login or the static AdminToken (GitHub Actions schedule, X
-// radar push). Reads stay public.
+// radar push). Reads stay public, except /api/admin/* (alerts), which needs
+// the same token.
 //
 // With neither configured, writes are open only when RequireAdmin is false
 // (local development); with RequireAdmin set (production) they fail closed
@@ -65,7 +66,8 @@ var publicWrites = map[string]bool{"/api/auth/login": true, "/api/auth/logout": 
 
 func (s *Server) requireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isRead(r.Method) || s.WritesOpen() || publicWrites[r.URL.Path] {
+		adminRead := strings.HasPrefix(r.URL.Path, "/api/admin/")
+		if (isRead(r.Method) && !adminRead) || s.WritesOpen() || publicWrites[r.URL.Path] {
 			next.ServeHTTP(w, r)
 			return
 		}

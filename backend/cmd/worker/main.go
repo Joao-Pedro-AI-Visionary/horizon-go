@@ -254,7 +254,8 @@ func run(ctx context.Context, log *slog.Logger, once, seed bool, window, timeout
 		}()
 	}
 	if withDigest {
-		sched := &digest.Scheduler{Service: &digest.Service{Store: postgres.ReadRepo{DB: pool}}, Log: log}
+		read := postgres.ReadRepo{DB: pool}
+		sched := &digest.Scheduler{Service: &digest.Service{Store: read, Failures: read}, Log: log}
 		if err := sched.Sync(ctx); err != nil {
 			return fmt.Errorf("digest cron: %w", err)
 		}

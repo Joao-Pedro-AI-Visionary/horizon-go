@@ -177,7 +177,8 @@ func run(ctx context.Context, log *slog.Logger) error {
 	srv := &httpapi.Server{
 		Store:   read,
 		Sources: sources,
-		Digests: &digest.Service{Store: read},
+		Digests: &digest.Service{Store: read, Failures: read},
+		Alerts:  read,
 		Collector: &ingest.Pipeline{
 			Sources:   sources,
 			Collector: collector,

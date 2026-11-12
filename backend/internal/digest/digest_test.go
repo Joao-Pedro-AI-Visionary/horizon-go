@@ -168,12 +168,13 @@ type fakeStore struct {
 	cands    []domain.FeedItem
 	from, to time.Time
 	saved    domain.Digest
+	candErr  error
 }
 
 func (f *fakeStore) GetSettings(context.Context) (domain.Settings, error) { return f.st, nil }
 func (f *fakeStore) DigestCandidates(_ context.Context, from, to time.Time) ([]domain.FeedItem, error) {
 	f.from, f.to = from, to
-	return f.cands, nil
+	return f.cands, f.candErr
 }
 func (f *fakeStore) SaveDigest(_ context.Context, d domain.Digest) (domain.Digest, error) {
 	f.saved = d

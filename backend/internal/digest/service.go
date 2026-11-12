@@ -2,6 +2,7 @@ package digest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -17,10 +18,18 @@ type Store interface {
 	SaveDigest(ctx context.Context, d domain.Digest) (domain.Digest, error)
 }
 
+// FailureRecorder keeps failures for the admin alerts.
+type FailureRecorder interface {
+	RecordFailure(ctx context.Context, kind, name, message string) error
+}
+
 // Service generates digests.
 type Service struct {
 	Store Store
 	Now   func() time.Time // defaults to time.Now
+	// Failures, when set, records generation failures (not bad input) so the
+	// admin alerts show them until the next digest is saved.
+	Failures FailureRecorder
 }
 
 func (s *Service) now() time.Time {
@@ -45,6 +54,19 @@ func Window(date time.Time, now time.Time, loc *time.Location) (from, to time.Ti
 // Generate builds, renders and saves the digest of date (YYYY-MM-DD in the
 // settings timezone; "" = today). Generating the same date again replaces it.
 func (s *Service) Generate(ctx context.Context, date string) (domain.Digest, error) {
+	d, err := s.generate(ctx, date)
+	if err != nil && s.Failures != nil && !errors.Is(err, domain.ErrInvalid) && ctx.Err() == nil {
+		name := "Digest"
+		if date != "" {
+			name = "Digest " + date
+		}
+		// Recording is best effort: the caller already gets err.
+		_ = s.Failures.RecordFailure(context.WithoutCancel(ctx), domain.AlertDigest, name, err.Error())
+	}
+	return d, err
+}
+
+func (s *Service) generate(ctx context.Context, date string) (domain.Digest, error) {
 	st, err := s.Store.GetSettings(ctx)
 	if err != nil {
 		return domain.Digest{}, err

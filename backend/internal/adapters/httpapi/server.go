@@ -55,6 +55,11 @@ type Pusher interface {
 	Push(ctx context.Context, items []ingest.PushItem) (ingest.PushReport, error)
 }
 
+// AlertStore lists the open failures for GET /api/admin/alerts.
+type AlertStore interface {
+	Alerts(ctx context.Context, since, now time.Time, stale time.Duration) ([]domain.Alert, error)
+}
+
 // Check is a named dependency probe for /healthz.
 type Check struct {
 	Name string
@@ -69,6 +74,11 @@ type Server struct {
 	Collector Collector
 	// Pusher, when set, enables POST /api/items/ingest.
 	Pusher Pusher
+	// Alerts, when set, enables GET /api/admin/alerts (admin only).
+	Alerts AlertStore
+	// AlertStale raises an alert when no fetch succeeded for this long
+	// (default 14h; negative disables it).
+	AlertStale time.Duration
 	// ValidateSource builds the adapter to reject bad kinds/configs (400).
 	ValidateSource func(domain.SourceConfig) error
 	// ValidateCron checks the digest cron spec.
@@ -134,6 +144,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/metrics", s.metrics)
 		r.Post("/pipeline/run", s.runPipeline)
 		r.Post("/items/ingest", s.ingestItems)
+		r.Get("/admin/alerts", s.adminAlerts)
 	})
 	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
