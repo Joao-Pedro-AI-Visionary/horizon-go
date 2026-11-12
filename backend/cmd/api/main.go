@@ -13,6 +13,9 @@
 //	COLLECT_WINDOW  24h   how far back a triggered collection looks
 //	COLLECT_COOLDOWN 0    minimum time between triggered collections (429 inside it)
 //	SOURCE_TIMEOUT  30s   per-source fetch timeout
+//	HORIZON_ADMIN_TOKEN   bearer token required by every write (POST/PUT/PATCH/DELETE)
+//	HORIZON_ENV     "production" (or running on Render) refuses writes while
+//	                HORIZON_ADMIN_TOKEN is unset (fail closed)
 //
 // Triggered collections publish to NATS items.raw; the worker persists, scores
 // and dedups them.
@@ -83,6 +86,13 @@ func listenAddr(lookup func(string) string) string {
 	return ":8080"
 }
 
+// isProduction is HORIZON_ENV=production, or a Render service (RENDER is
+// set on every Render instance).
+func isProduction(lookup func(string) string) bool {
+	return strings.EqualFold(strings.TrimSpace(lookup("HORIZON_ENV")), "production") ||
+		strings.TrimSpace(lookup("RENDER")) != ""
+}
+
 func envDuration(k string, def time.Duration) time.Duration {
 	if d, err := time.ParseDuration(os.Getenv(k)); err == nil && d > 0 {
 		return d
@@ -115,16 +125,18 @@ func run(ctx context.Context, log *slog.Logger) error {
 	timeout := envDuration("SOURCE_TIMEOUT", app.DefaultSourceTimeout)
 	read := postgres.ReadRepo{DB: pool}
 	sources := postgres.SourceRepo{DB: pool}
+	collector := &app.Collector{Publisher: bus, Runs: postgres.FetchRunRepo{DB: pool}, Timeout: timeout, Log: log}
 	srv := &httpapi.Server{
 		Store:   read,
 		Sources: sources,
 		Digests: &digest.Service{Store: read},
 		Collector: &ingest.Pipeline{
 			Sources:   sources,
-			Collector: &app.Collector{Publisher: bus, Runs: postgres.FetchRunRepo{DB: pool}, Timeout: timeout, Log: log},
+			Collector: collector,
 			Client:    &http.Client{Timeout: timeout},
 			Log:       log,
 		},
+		Pusher: &ingest.Pusher{Sources: sources, Items: postgres.ItemRepo{DB: pool}, Publisher: bus},
 		ValidateSource: func(c domain.SourceConfig) error {
 			_, err := source.Build(c, nil, source.BaseURLs{})
 			return err
@@ -134,6 +146,8 @@ func run(ctx context.Context, log *slog.Logger) error {
 		Window:          envDuration("COLLECT_WINDOW", 24*time.Hour),
 		AllowedOrigins:  corsOrigins(os.Getenv),
 		CollectCooldown: envDuration("COLLECT_COOLDOWN", 0),
+		AdminToken:      strings.TrimSpace(os.Getenv("HORIZON_ADMIN_TOKEN")),
+		RequireAdmin:    isProduction(os.Getenv),
 		Log:             log,
 	}
 	hs := &http.Server{
@@ -146,7 +160,8 @@ func run(ctx context.Context, log *slog.Logger) error {
 	}
 	errc := make(chan error, 1)
 	go func() {
-		log.Info("api listening", "addr", hs.Addr, "cors", srv.AllowedOrigins)
+		log.Info("api listening", "addr", hs.Addr, "cors", srv.AllowedOrigins,
+			"admin_token", srv.AdminToken != "", "writes_open", srv.WritesOpen())
 		errc <- hs.ListenAndServe()
 	}()
 	select {

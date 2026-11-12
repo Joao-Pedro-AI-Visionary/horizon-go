@@ -10,6 +10,9 @@ const (
 	KindHackerNews = "hackernews"
 	KindReddit     = "reddit"
 	KindRSS        = "rss"
+	// KindPush sources are never fetched: items are pushed to
+	// POST /api/items/ingest.
+	KindPush = "push"
 )
 
 // SourceConfig is a configured source row. Config holds kind-specific

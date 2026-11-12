@@ -41,3 +41,19 @@ func TestListenAddr(t *testing.T) {
 		}
 	}
 }
+
+func TestIsProduction(t *testing.T) {
+	for _, c := range []struct {
+		env  map[string]string
+		want bool
+	}{
+		{nil, false},
+		{map[string]string{"HORIZON_ENV": "development"}, false},
+		{map[string]string{"HORIZON_ENV": "Production"}, true},
+		{map[string]string{"RENDER": "true"}, true},
+	} {
+		if got := isProduction(func(k string) string { return c.env[k] }); got != c.want {
+			t.Errorf("%v: got %v want %v", c.env, got, c.want)
+		}
+	}
+}
