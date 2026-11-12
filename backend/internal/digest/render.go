@@ -171,19 +171,30 @@ var page = template.Must(template.New("digest").Parse(`<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}}</title>
 <style>
-body{margin:0;background:#0B0B0B;color:#EDEDED;font:16px/1.6 Inter,system-ui,sans-serif}
-main{max-width:760px;margin:0 auto;padding:32px 20px}
-h1,h2{font-family:"Space Grotesk",Inter,sans-serif;line-height:1.25}
-h1{color:#FFD400;font-size:28px;margin:0 0 8px}
-h2{font-size:20px;margin:0 0 8px}
-a{color:#FFD400}
-.intro{color:#B5B5B5;border-left:3px solid #FFD400;padding-left:12px}
-.toc{padding-left:20px}
-.item{background:#141414;border:1px solid #262626;border-radius:12px;padding:20px;margin:16px 0}
-.score{font-family:"JetBrains Mono",monospace;color:#0B0B0B;background:#FFD400;border-radius:6px;padding:2px 8px;font-weight:700}
-.meta{color:#B5B5B5;font-size:14px}
-.tag{display:inline-block;border:1px solid #FF7A00;color:#FF7A00;border-radius:999px;padding:0 10px;margin:4px 4px 0 0;font-size:13px}
-.reason{color:#D0D0D0}
+/* Sage palette of the horizon-web design (light, AA contrast). */
+:root{color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;background:#eef2ee;color:#121a14;font:16px/1.65 Inter,"Segoe UI",system-ui,-apple-system,sans-serif;-webkit-text-size-adjust:100%}
+main{max-width:760px;margin:0 auto;padding:clamp(16px,4vw,40px) clamp(14px,4vw,24px)}
+h1,h2{font-family:"Plus Jakarta Sans",Inter,"Segoe UI",system-ui,sans-serif;line-height:1.25;letter-spacing:-0.01em;margin:0}
+h1{font-size:clamp(24px,5vw,32px);font-weight:800}
+h2{font-size:clamp(18px,3.6vw,21px);font-weight:700;margin-bottom:8px;overflow-wrap:anywhere}
+p{margin:0 0 10px}
+a{color:#276b43;text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px}
+a:hover{color:#121a14}
+a:focus-visible{outline:2px solid #276b43;outline-offset:2px;border-radius:4px}
+h2 a{color:#121a14;text-decoration:none}
+h2 a:hover{color:#276b43;text-decoration:underline}
+.intro{color:#56635a;margin:10px 0 20px;padding:12px 16px;background:#e3f1e6;border-radius:16px}
+.toc{background:#fff;border:1px solid #dbe3dc;border-radius:20px;padding:16px 20px 16px 40px;margin:0 0 20px}
+.toc li{margin:4px 0}
+.toc a{color:#121a14;text-decoration:none}
+.toc a:hover{color:#276b43;text-decoration:underline}
+.item{background:#fff;border:1px solid rgb(18 26 20 / .06);border-radius:24px;padding:clamp(16px,3.5vw,24px);margin:14px 0;box-shadow:0 1px 2px rgb(18 26 20 / .04),0 12px 32px -12px rgb(18 26 20 / .14)}
+.score{display:inline-block;font-family:"JetBrains Mono",ui-monospace,monospace;font-weight:700;font-size:13px;color:#276b43;background:#e3f1e6;border:1px solid rgb(39 107 67 / .25);border-radius:999px;padding:1px 10px}
+.meta{color:#56635a;font-size:14px}
+.reason{color:#2b352d}
+.tag{display:inline-block;color:#121a14;background:#eef2ee;border:1px solid #dbe3dc;border-radius:999px;padding:1px 10px;margin:4px 6px 0 0;font-size:13px}
 </style>
 </head>
 <body>
