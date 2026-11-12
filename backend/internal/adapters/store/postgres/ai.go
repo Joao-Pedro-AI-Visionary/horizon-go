@@ -102,9 +102,10 @@ func (r AIRepo) PendingScore(ctx context.Context, maxAttempts, limit int) ([]int
 	return r.ids(ctx, `SELECT id FROM items WHERE status = 'raw' AND score IS NULL AND score_attempts < $1 ORDER BY id LIMIT $2`, maxAttempts, limit)
 }
 
-// PendingDedup lists scored items not yet clustered.
+// PendingDedup lists scored items not yet clustered (with or without an
+// embedding: items without one become single-item clusters).
 func (r AIRepo) PendingDedup(ctx context.Context, limit int) ([]int64, error) {
-	return r.ids(ctx, `SELECT id FROM items WHERE status = 'scored' AND embedding IS NOT NULL ORDER BY COALESCE(published_at, fetched_at), id LIMIT $1`, limit)
+	return r.ids(ctx, `SELECT id FROM items WHERE status = 'scored' ORDER BY COALESCE(published_at, fetched_at), id LIMIT $1`, limit)
 }
 
 func (r AIRepo) ids(ctx context.Context, q string, args ...any) ([]int64, error) {
@@ -126,17 +127,23 @@ FROM items i JOIN sources s ON s.id = i.source_id WHERE i.id = $1`, id).
 }
 
 // SaveScore writes the analysis and embedding once; it returns false when the
-// item was already scored (another worker or a redelivery won).
+// item was already scored (another worker or a redelivery won). An empty emb
+// (EMBED_PROVIDER=none) stores a NULL embedding.
 func (r AIRepo) SaveScore(ctx context.Context, id int64, a domain.Analysis, emb []float32) (bool, error) {
 	tags := a.Tags
 	if tags == nil {
 		tags = []string{}
 	}
+	var vec *string
+	if len(emb) > 0 {
+		lit := VectorLiteral(emb)
+		vec = &lit
+	}
 	tag, err := r.DB.Exec(ctx, `
 UPDATE items SET score = $2, score_reason = $3, summary = $4, tags = $5, embedding = $6::vector,
        status = 'scored', scored_at = now(), last_error = '', updated_at = now()
 WHERE id = $1 AND score IS NULL`,
-		id, a.Score, a.Reason, a.Summary, tags, VectorLiteral(emb))
+		id, a.Score, a.Reason, a.Summary, tags, vec)
 	if err != nil {
 		return false, err
 	}

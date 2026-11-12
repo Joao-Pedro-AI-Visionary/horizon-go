@@ -48,3 +48,15 @@ func TestDatabaseURLBuiltFromParts(t *testing.T) {
 		t.Fatalf("unexpected DSN %q", u.String())
 	}
 }
+
+func TestDatabaseURLDropsNeonChannelBinding(t *testing.T) {
+	clearPG(t)
+	t.Setenv("DATABASE_URL", "postgresql://u:p@ep-x-123.sa-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
+	u, err := url.Parse(DatabaseURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Query().Has("channel_binding") || u.Query().Get("sslmode") != "require" || u.Host != "ep-x-123.sa-east-1.aws.neon.tech" {
+		t.Fatalf("got %q", u.String())
+	}
+}

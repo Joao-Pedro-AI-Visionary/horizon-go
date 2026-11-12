@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/jpdev/horizon-go/internal/domain"
@@ -49,6 +50,11 @@ type LLM interface {
 	Model() string
 	Chat(ctx context.Context, req ChatRequest) (string, error)
 }
+
+// ErrEmbeddingUnavailable is returned (wrapped) by an Embedder whose quota is
+// spent (e.g. the Workers AI daily free allocation). Callers degrade to "no
+// embedding" instead of failing: the item is scored but not deduplicated.
+var ErrEmbeddingUnavailable = errors.New("embedding unavailable")
 
 // Embedder turns texts into vectors (one per input, same order).
 type Embedder interface {

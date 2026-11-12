@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -266,5 +267,33 @@ func TestScoreCacheKeyIncludesAuthor(t *testing.T) {
 	}
 	if len(llm.calls) != 2 {
 		t.Errorf("different authors must not share a cached analysis, calls = %d", len(llm.calls))
+	}
+}
+
+func TestEmbedWithoutEmbedderReturnsNoVector(t *testing.T) {
+	a := &Analyzer{Cache: &memCache{}, Dims: 768, Retry: fastRetry} // EMBED_PROVIDER=none
+	v, err := a.Embed(context.Background(), "clustering: Go 1.26")
+	if err != nil || v != nil {
+		t.Fatalf("v=%v err=%v", v, err)
+	}
+}
+
+type spentEmbedder struct{ calls int }
+
+func (s *spentEmbedder) Model() string { return "spent" }
+func (s *spentEmbedder) Embed(context.Context, []string) ([][]float32, error) {
+	s.calls++
+	return nil, fmt.Errorf("quota: %w", ports.ErrEmbeddingUnavailable)
+}
+
+func TestEmbedDegradesWhenQuotaIsSpent(t *testing.T) {
+	emb := &spentEmbedder{}
+	a := &Analyzer{Embedder: emb, Cache: &memCache{}, Dims: 768, Retry: fastRetry}
+	v, err := a.Embed(context.Background(), "clustering: x")
+	if err != nil || v != nil {
+		t.Fatalf("v=%v err=%v", v, err)
+	}
+	if emb.calls != 1 {
+		t.Errorf("an unavailable embedder must not be retried: %d calls", emb.calls)
 	}
 }

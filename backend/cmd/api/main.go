@@ -9,7 +9,9 @@
 //	HORIZON_CORS_ORIGINS  origins allowed to call the API from the browser
 //	                (comma separated; CORS_ORIGINS is still accepted). Default:
 //	                the horizon-web dev and preview servers, see defaultCORSOrigins.
+//	PORT            used as :$PORT when API_ADDR is unset (Render sets it)
 //	COLLECT_WINDOW  24h   how far back a triggered collection looks
+//	COLLECT_COOLDOWN 0    minimum time between triggered collections (429 inside it)
 //	SOURCE_TIMEOUT  30s   per-source fetch timeout
 //
 // Triggered collections publish to NATS items.raw; the worker persists, scores
@@ -69,6 +71,18 @@ func corsOrigins(lookup func(string) string) []string {
 	return out
 }
 
+// listenAddr is API_ADDR, else ":$PORT" (Render, Fly and Heroku-style hosts
+// set PORT), else :8080.
+func listenAddr(lookup func(string) string) string {
+	if v := strings.TrimSpace(lookup("API_ADDR")); v != "" {
+		return v
+	}
+	if p := strings.TrimSpace(lookup("PORT")); p != "" {
+		return ":" + p
+	}
+	return ":8080"
+}
+
 func envDuration(k string, def time.Duration) time.Duration {
 	if d, err := time.ParseDuration(os.Getenv(k)); err == nil && d > 0 {
 		return d
@@ -115,14 +129,15 @@ func run(ctx context.Context, log *slog.Logger) error {
 			_, err := source.Build(c, nil, source.BaseURLs{})
 			return err
 		},
-		ValidateCron:   digest.ValidateCron,
-		Checks:         []httpapi.Check{{Name: "postgres", Fn: read.Ping}, {Name: "nats", Fn: bus.Ping}},
-		Window:         envDuration("COLLECT_WINDOW", 24*time.Hour),
-		AllowedOrigins: corsOrigins(os.Getenv),
-		Log:            log,
+		ValidateCron:    digest.ValidateCron,
+		Checks:          []httpapi.Check{{Name: "postgres", Fn: read.Ping}, {Name: "nats", Fn: bus.Ping}},
+		Window:          envDuration("COLLECT_WINDOW", 24*time.Hour),
+		AllowedOrigins:  corsOrigins(os.Getenv),
+		CollectCooldown: envDuration("COLLECT_COOLDOWN", 0),
+		Log:             log,
 	}
 	hs := &http.Server{
-		Addr:              getenv("API_ADDR", ":8080"),
+		Addr:              listenAddr(os.Getenv),
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,

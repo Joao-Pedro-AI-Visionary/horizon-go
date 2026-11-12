@@ -448,6 +448,14 @@ func (s *Server) collect(w http.ResponseWriter, r *http.Request, run func() (app
 		return
 	}
 	defer s.collecting.Unlock()
+	if s.CollectCooldown > 0 && !s.lastCollect.IsZero() {
+		if wait := s.CollectCooldown - time.Since(s.lastCollect); wait > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+			writeError(w, http.StatusTooManyRequests, "a collection ran recently; try again later")
+			return
+		}
+	}
+	s.lastCollect = time.Now()
 	rep, err := run()
 	if err != nil && rep.RunID == "" {
 		s.fail(w, r, err)

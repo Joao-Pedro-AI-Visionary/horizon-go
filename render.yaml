@@ -1,0 +1,53 @@
+# Render Blueprint: the whole backend (nats-server + migrations + api + worker)
+# as ONE free Docker web service. Step by step: docs/deploy.md.
+# Secrets use sync: false, so Render asks for them when the Blueprint is
+# created and never reads them from this file.
+services:
+  - type: web
+    name: horizon-api
+    runtime: docker
+    plan: free
+    region: virginia # next to the Neon project (aws-us-east-1)
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      # --- secrets (asked on creation) ---
+      - key: DATABASE_URL # Neon, direct (non -pooler) endpoint, ?sslmode=require
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: CF_ACCOUNT_ID
+        sync: false
+      - key: CF_API_TOKEN
+        sync: false
+      - key: HORIZON_CORS_ORIGINS # e.g. https://horizon-web.vercel.app
+        sync: false
+      # --- models ---
+      - key: LLM_PROVIDER
+        value: groq
+      - key: LLM_MODEL
+        value: openai/gpt-oss-20b
+      - key: LLM_RPM
+        value: "20"
+      - key: EMBED_PROVIDER
+        value: cloudflare # "none" disables embeddings (each item its own cluster)
+      - key: EMBED_MODEL
+        value: "@cf/baai/bge-base-en-v1.5"
+      # --- low memory / free-tier friendly ---
+      - key: SCORE_WORKERS
+        value: "1"
+      - key: COLLECT_INTERVAL
+        value: 30m
+      - key: COLLECT_COOLDOWN
+        value: 10m
+      - key: COLLECT_WINDOW
+        value: 24h
+      - key: SOURCE_TIMEOUT
+        value: 30s
+      - key: WORKER_SEED
+        value: "true"
+      - key: TZ
+        value: America/Sao_Paulo

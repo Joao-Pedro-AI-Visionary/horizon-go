@@ -26,3 +26,18 @@ func TestCORSOrigins(t *testing.T) {
 		}
 	}
 }
+
+func TestListenAddr(t *testing.T) {
+	for _, c := range []struct {
+		env  map[string]string
+		want string
+	}{
+		{nil, ":8080"},
+		{map[string]string{"PORT": "10000"}, ":10000"},
+		{map[string]string{"PORT": "10000", "API_ADDR": "127.0.0.1:9000"}, "127.0.0.1:9000"},
+	} {
+		if got := listenAddr(func(k string) string { return c.env[k] }); got != c.want {
+			t.Errorf("%v: got %q want %q", c.env, got, c.want)
+		}
+	}
+}
