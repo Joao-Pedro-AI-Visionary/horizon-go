@@ -131,3 +131,53 @@ func TestConfigValidate(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+const manyFeed = `<?xml version="1.0"?>
+<rss version="2.0"><channel><title>Many</title><link>https://ex.com</link><pubDate>Mon, 02 Nov 2026 07:00:00 +0000</pubDate>
+<item><title>Old</title><link>https://ex.com/1</link><pubDate>Mon, 02 Nov 2026 01:00:00 +0000</pubDate></item>
+<item><title>Newest</title><link>https://ex.com/3</link><pubDate>Mon, 02 Nov 2026 03:00:00 +0000</pubDate></item>
+<item><title>Middle</title><link>https://ex.com/2</link><pubDate>Mon, 02 Nov 2026 02:00:00 +0000</pubDate></item>
+<item><title>Trending repo</title><link>https://github.com/a/b</link></item>
+</channel></rss>`
+
+func TestFetchLimitKeepsNewest(t *testing.T) {
+	srv := serve(t, http.StatusOK, manyFeed)
+	s := New(Params{Name: "many", Config: Config{URL: srv.URL, Limit: 2}})
+	items, err := s.Fetch(context.Background(), now.Add(-48*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 || items[0].Title != "Newest" || items[1].Title != "Middle" {
+		t.Fatalf("got %+v", items)
+	}
+}
+
+func TestFetchUndatedUsesFeedDate(t *testing.T) {
+	srv := serve(t, http.StatusOK, manyFeed)
+	s := New(Params{Name: "many", Config: Config{URL: srv.URL, Undated: true}})
+	items, err := s.Fetch(context.Background(), now.Add(-48*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, it := range items {
+		if it.URL == "https://github.com/a/b" {
+			found = true
+			if want := time.Date(2026, 11, 2, 7, 0, 0, 0, time.UTC); !it.PublishedAt.Equal(want) {
+				t.Errorf("undated entry got %v want %v", it.PublishedAt, want)
+			}
+		}
+	}
+	if !found || len(items) != 4 {
+		t.Fatalf("got %d items, undated found=%v", len(items), found)
+	}
+}
+
+func TestValidateLimit(t *testing.T) {
+	if err := (Config{URL: "https://ex.com/f", Limit: -1}).Validate(); err == nil {
+		t.Fatal("negative limit accepted")
+	}
+	if err := (Config{URL: "https://ex.com/f", Limit: MaxLimit + 1}).Validate(); err == nil {
+		t.Fatal("huge limit accepted")
+	}
+}

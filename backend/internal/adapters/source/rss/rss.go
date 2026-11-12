@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"time"
 
 	"github.com/mmcdole/gofeed"
@@ -21,16 +22,29 @@ const (
 	maxContentRunes = 1500
 )
 
+// MaxLimit bounds Config.Limit.
+const MaxLimit = 200
+
 // Config is the JSON stored in sources.config for kind=rss.
+//
+// Limit (0 = no cap) keeps only the newest N entries of each fetch, so a busy
+// feed cannot flood the scorer and its model quota. Undated accepts entries
+// without a date (e.g. GitHub trending lists), dated with the feed's own
+// date or, failing that, the fetch time.
 type Config struct {
-	URL string `json:"url"`
+	URL     string `json:"url"`
+	Limit   int    `json:"limit,omitempty"`
+	Undated bool   `json:"undated,omitempty"`
 }
 
-// Validate checks that URL is an absolute http(s) URL.
+// Validate checks that URL is an absolute http(s) URL and Limit is in range.
 func (c Config) Validate() error {
 	u, err := url.Parse(c.URL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return fmt.Errorf("rss: invalid feed url %q", c.URL)
+	}
+	if c.Limit < 0 || c.Limit > MaxLimit {
+		return fmt.Errorf("rss: limit must be within 0..%d", MaxLimit)
 	}
 	return nil
 }
@@ -88,11 +102,21 @@ func (s *Source) Fetch(ctx context.Context, since time.Time) ([]domain.Item, err
 	}
 
 	fetchedAt := time.Now().UTC()
+	feedDate := feed.PublishedParsed
+	if feedDate == nil {
+		feedDate = feed.UpdatedParsed
+	}
+	if feedDate == nil || feedDate.After(fetchedAt) {
+		feedDate = &fetchedAt
+	}
 	var items []domain.Item
 	for _, e := range feed.Items {
 		published := e.PublishedParsed
 		if published == nil {
 			published = e.UpdatedParsed
+		}
+		if published == nil && s.cfg.Undated {
+			published = feedDate
 		}
 		if e.Link == "" || e.Title == "" || published == nil || published.Before(since) {
 			continue
@@ -119,6 +143,10 @@ func (s *Source) Fetch(ctx context.Context, since time.Time) ([]domain.Item, err
 			PublishedAt: published.UTC(),
 			FetchedAt:   fetchedAt,
 		})
+	}
+	if s.cfg.Limit > 0 && len(items) > s.cfg.Limit {
+		sort.SliceStable(items, func(i, j int) bool { return items[i].PublishedAt.After(items[j].PublishedAt) })
+		items = items[:s.cfg.Limit]
 	}
 	return items, nil
 }
