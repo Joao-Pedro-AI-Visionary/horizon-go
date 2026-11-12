@@ -2,7 +2,7 @@
 // items.raw -> persister -> items; then scorer (LLM rubric + embedding, N
 // workers) -> items.scored -> deduper (pgvector + LLM) -> clusters, feed_view
 // -> items.deduped; plus the daily digest cron (settings: digest_cron in the
-// settings timezone, default 07:00 America/Sao_Paulo). Every Ollama call adds
+// settings timezone, default 07:00 America/Sao_Paulo). Every model call adds
 // its prompt_eval_count/eval_count to llm_usage.
 //
 //	worker --once [--seed] [--window 24h]   one cycle, then print the report
@@ -11,7 +11,9 @@
 //	worker [--interval 30m] [--digest=true] collect periodically, run every stage continuously and the digest cron
 //
 // DATABASE_URL, NATS_URL, OLLAMA_URL, LLM_MODEL, LLM_NUM_CTX and EMBED_MODEL override the
-// local defaults from CLAUDE.md.
+// local defaults from CLAUDE.md. LLM_PROVIDER=groq and EMBED_PROVIDER=none switch
+// to the hosted free-tier setup used in production (see models.go and docs/deploy.md).
+// COLLECT_INTERVAL overrides --interval.
 package main
 
 import (
@@ -33,7 +35,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/jpdev/horizon-go/internal/adapters/bus/natsbus"
-	"github.com/jpdev/horizon-go/internal/adapters/llm/ollama"
 	"github.com/jpdev/horizon-go/internal/adapters/store/postgres"
 	"github.com/jpdev/horizon-go/internal/app"
 	"github.com/jpdev/horizon-go/internal/config"
@@ -61,7 +62,7 @@ func main() {
 	seed := flag.Bool("seed", false, "insert the default sources (HN, r/golang, Go blog) if missing")
 	window := flag.Duration("window", 24*time.Hour, "only keep items published within this window")
 	timeout := flag.Duration("timeout", app.DefaultSourceTimeout, "per-source fetch timeout")
-	interval := flag.Duration("interval", 30*time.Minute, "collect interval in continuous mode")
+	interval := flag.Duration("interval", envDuration("COLLECT_INTERVAL", 30*time.Minute), "collect interval in continuous mode (env COLLECT_INTERVAL)")
 	withDigest := flag.Bool("digest", true, "continuous mode: run the digest cron")
 	var o aiOptions
 	flag.BoolVar(&o.enabled, "ai", true, "run the scoring and dedup stages")
@@ -90,6 +91,13 @@ func getenv(k, def string) string {
 	return def
 }
 
+func envDuration(k string, def time.Duration) time.Duration {
+	if d, err := time.ParseDuration(os.Getenv(k)); err == nil && d > 0 {
+		return d
+	}
+	return def
+}
+
 func envInt(k string, def int) int {
 	if v, err := strconv.Atoi(os.Getenv(k)); err == nil && v > 0 {
 		return v
@@ -106,19 +114,17 @@ type aiStages struct {
 
 func newAIStages(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, bus *natsbus.Bus, o aiOptions) (*aiStages, error) {
 	usage := postgres.UsageRepo{DB: pool}
-	oc := ollama.New(ollama.Config{
-		URL:        getenv("OLLAMA_URL", ollama.DefaultURL),
-		ChatModel:  getenv("LLM_MODEL", ollama.DefaultChatModel),
-		EmbedModel: getenv("EMBED_MODEL", ollama.DefaultEmbedModel),
-		NumCtx:     envInt("LLM_NUM_CTX", ollama.DefaultNumCtx),
-		OnUsage: func(ctx context.Context, u domain.TokenUsage) {
-			if err := usage.Record(context.WithoutCancel(ctx), u); err != nil {
-				log.Warn("record token usage", "err", err)
-			}
-		},
+	llm, emb, err := buildModels(os.Getenv, func(ctx context.Context, u domain.TokenUsage) {
+		if err := usage.Record(context.WithoutCancel(ctx), u); err != nil {
+			log.Warn("record token usage", "err", err)
+		}
 	})
-	// items.embedding is vector(768) (nomic-embed-text).
-	an := &app.Analyzer{LLM: oc.LLM(), Embedder: oc.Embedder(), Cache: postgres.AICache{DB: pool}, Dims: 768}
+	if err != nil {
+		return nil, err
+	}
+	// items.embedding is vector(768) (nomic-embed-text). emb is nil with
+	// EMBED_PROVIDER=none: no embeddings, every item its own cluster.
+	an := &app.Analyzer{LLM: llm, Embedder: emb, Cache: postgres.AICache{DB: pool}, Dims: embedDims}
 	repo := postgres.AIRepo{DB: pool}
 	rawCons, err := bus.Consumer(ctx, enrich.ScorerDurable, bus.RawSubject(), enrich.AckWait)
 	if err != nil {
@@ -128,7 +134,11 @@ func newAIStages(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, bus 
 	if err != nil {
 		return nil, err
 	}
-	log.Info("ai stages ready", "llm", an.LLM.Model(), "embedder", an.Embedder.Model(), "workers", o.workers,
+	embName := "none"
+	if emb != nil {
+		embName = emb.Model()
+	}
+	log.Info("ai stages ready", "llm", an.LLM.Model(), "embedder", embName, "workers", o.workers,
 		"dup", o.th.Duplicate, "ambiguous", o.th.Ambiguous, "window", o.dedupWindow)
 	return &aiStages{
 		scorer:     &enrich.Scorer{Repo: repo, Analyzer: an, Bus: bus, Workers: o.workers, Log: log},

@@ -230,7 +230,9 @@ func parseAnalysis(raw string) (domain.Analysis, error) {
 
 // Analyzer wraps the model ports with retry/backoff and the content cache.
 type Analyzer struct {
-	LLM      ports.LLM
+	LLM ports.LLM
+	// Embedder is optional: nil (EMBED_PROVIDER=none) makes Embed return no
+	// vector, and the deduper then keeps every item in its own cluster.
 	Embedder ports.Embedder
 	Cache    ports.AICache // optional
 	// Dims is the expected embedding size (the vector column); 0 skips the check.
@@ -299,8 +301,12 @@ func EmbeddingText(title, summary string) string {
 	return "clustering: " + truncateRunes(t, maxEmbedRunes)
 }
 
-// Embed returns the vector of text, from the cache when possible.
+// Embed returns the vector of text, from the cache when possible, or nil
+// without an Embedder or when the embedder reports ErrEmbeddingUnavailable.
 func (a *Analyzer) Embed(ctx context.Context, text string) ([]float32, error) {
+	if a.Embedder == nil {
+		return nil, nil
+	}
 	key := domain.ContentHash(a.Embedder.Model(), text)
 	var out []float32
 	if a.cached(ctx, "embed", key, &out) && len(out) > 0 && (a.Dims == 0 || len(out) == a.Dims) {
@@ -308,6 +314,9 @@ func (a *Analyzer) Embed(ctx context.Context, text string) ([]float32, error) {
 	}
 	err := retry.Do(ctx, a.policy(), func(ctx context.Context) error {
 		vs, err := a.Embedder.Embed(ctx, []string{text})
+		if errors.Is(err, ports.ErrEmbeddingUnavailable) {
+			return retry.Permanent(err)
+		}
 		if err != nil {
 			return err
 		}
@@ -320,6 +329,10 @@ func (a *Analyzer) Embed(ctx context.Context, text string) ([]float32, error) {
 		out = vs[0]
 		return nil
 	})
+	if errors.Is(err, ports.ErrEmbeddingUnavailable) {
+		// Quota spent: degrade to no embedding (own cluster, no dedup).
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("embed: %w", err)
 	}
