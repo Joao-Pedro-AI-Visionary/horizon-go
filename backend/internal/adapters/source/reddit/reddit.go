@@ -1,7 +1,15 @@
-// Package reddit is the Reddit source adapter, using the public listing JSON
-// (https://www.reddit.com/r/<sub>/<sort>.json). When Reddit blocks the JSON
-// endpoint (403) it falls back to the subreddit Atom feed, like upstream
-// Horizon does; the feed carries no score, so min_score is not applied there.
+// Package reddit is the Reddit source adapter. By default it reads the
+// subreddit Atom feed (https://www.reddit.com/r/<sub>/<sort>/.rss), because
+// Reddit answers 403 to unauthenticated JSON listing calls; the feed carries
+// no score, so min_score is not applied there. With use_json the public
+// listing JSON (/r/<sub>/<sort>.json) is tried first, falling back to the
+// feed on 403.
+//
+// Rate limits are handled gently: on 429 the adapter honors Retry-After /
+// x-ratelimit-reset with at most one retry, and when Reddit keeps limiting
+// (or blocks the feed) the run is reported as skipped (domain.SkippedError)
+// and the cooldown is remembered in-process so later runs inside it do not
+// call Reddit at all.
 package reddit
 
 import (
@@ -16,6 +24,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mmcdole/gofeed"
@@ -37,13 +46,19 @@ var ErrRateLimited = errors.New("reddit: rate limited (429)")
 var ErrBlocked = errors.New("reddit: blocked (403)")
 
 const (
-	maxAttempts       = 3
-	defaultRetryAfter = 2 * time.Second
-	defaultMaxWait    = 30 * time.Second
-	defaultLimit      = 25
-	maxLimit          = 100
-	maxContentRunes   = 1500
-	maxBodyBytes      = 10 << 20
+	// maxAttempts is one request plus at most one retry after a 429.
+	maxAttempts       = 2
+	defaultRetryAfter = 5 * time.Second
+	// defaultMaxWait caps the wait before the retry; it stays below the
+	// collector's 30s per-source timeout.
+	defaultMaxWait = 20 * time.Second
+	// defaultCooldown applies when Reddit limits or blocks without saying
+	// for how long.
+	defaultCooldown = 10 * time.Minute
+	defaultLimit    = 25
+	maxLimit        = 100
+	maxContentRunes = 1500
+	maxBodyBytes    = 10 << 20
 )
 
 var (
@@ -59,6 +74,8 @@ type Config struct {
 	TimeFilter string `json:"time_filter,omitempty"`
 	Limit      int    `json:"limit,omitempty"`
 	MinScore   int    `json:"min_score,omitempty"`
+	// UseJSON tries the JSON listing (with scores) before the feed.
+	UseJSON bool `json:"use_json,omitempty"`
 }
 
 // Validate checks the subreddit name and sort.
@@ -143,11 +160,37 @@ type post struct {
 	Selftext   string  `json:"selftext"`
 }
 
-// Fetch implements ports.Source.
+// Fetch implements ports.Source. While Reddit's cooldown is active it returns
+// a domain.SkippedError without any request.
 func (s *Source) Fetch(ctx context.Context, since time.Time) ([]domain.Item, error) {
 	if err := s.cfg.Validate(); err != nil {
 		return nil, err
 	}
+	if left := cooldownLeft(s.base); left > 0 {
+		return nil, skipped("reddit rate limited (cooldown)", left)
+	}
+	var (
+		items []domain.Item
+		err   error
+	)
+	if s.cfg.UseJSON {
+		items, err = s.fetchJSON(ctx, since)
+	} else {
+		items, err = s.fetchRSS(ctx, since)
+	}
+	var lim *limitError
+	if errors.As(err, &lim) {
+		setCooldown(s.base, lim.retryAfter)
+		return nil, skipped(lim.reason, lim.retryAfter)
+	}
+	if err == nil {
+		clearCooldown(s.base)
+	}
+	return items, err
+}
+
+// fetchJSON reads the listing JSON, falling back to the feed on 403.
+func (s *Source) fetchJSON(ctx context.Context, since time.Time) ([]domain.Item, error) {
 	q := url.Values{"limit": {strconv.Itoa(s.cfg.Limit)}, "raw_json": {"1"}}
 	if s.cfg.Sort == "top" {
 		q.Set("t", s.cfg.TimeFilter)
@@ -156,7 +199,7 @@ func (s *Source) Fetch(ctx context.Context, since time.Time) ([]domain.Item, err
 
 	body, err := s.get(ctx, endpoint, "application/json")
 	if errors.Is(err, ErrBlocked) {
-		return s.fetchRSS(ctx, since, err)
+		return s.fetchRSS(ctx, since)
 	}
 	if err != nil {
 		return nil, err
@@ -195,12 +238,16 @@ func (s *Source) Fetch(ctx context.Context, since time.Time) ([]domain.Item, err
 	return items, nil
 }
 
-// fetchRSS reads /r/<sub>/<sort>/.rss after the JSON listing was blocked.
-func (s *Source) fetchRSS(ctx context.Context, since time.Time, jsonErr error) ([]domain.Item, error) {
+// fetchRSS reads the subreddit feed /r/<sub>/<sort>/.rss. A 403 here means
+// there is nothing left to fall back to, so it becomes a skip.
+func (s *Source) fetchRSS(ctx context.Context, since time.Time) ([]domain.Item, error) {
 	endpoint := fmt.Sprintf("%s/r/%s/%s/.rss?limit=%d", s.base, s.cfg.Subreddit, s.cfg.Sort, s.cfg.Limit)
 	body, err := s.get(ctx, endpoint, "application/atom+xml")
+	if errors.Is(err, ErrBlocked) {
+		return nil, &limitError{reason: "reddit blocked the feed (403)", retryAfter: defaultCooldown, err: err}
+	}
 	if err != nil {
-		return nil, fmt.Errorf("json: %v; rss fallback: %w", jsonErr, err)
+		return nil, err
 	}
 	feed, err := gofeed.NewParser().Parse(bytes.NewReader(body))
 	if err != nil {
@@ -242,8 +289,20 @@ func (s *Source) fetchRSS(ctx context.Context, since time.Time, jsonErr error) (
 	return items, nil
 }
 
-// get performs the request and returns the body, honoring 429 Retry-After
-// up to maxAttempts. 403 maps to ErrBlocked.
+// limitError carries how long Reddit asked us to back off.
+type limitError struct {
+	reason     string
+	retryAfter time.Duration
+	err        error
+}
+
+func (e *limitError) Error() string { return e.reason }
+func (e *limitError) Unwrap() error { return e.err }
+
+// get performs the request and returns the body. On 429 it waits the time
+// Reddit asks for (Retry-After or x-ratelimit-reset) and retries once, if
+// that wait is within maxWait; otherwise it gives up at once with a
+// *limitError. 403 maps to ErrBlocked.
 func (s *Source) get(ctx context.Context, endpoint, accept string) ([]byte, error) {
 	for attempt := 1; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -260,13 +319,18 @@ func (s *Source) get(ctx context.Context, endpoint, accept string) ([]byte, erro
 		resp.Body.Close()
 		switch {
 		case resp.StatusCode == http.StatusTooManyRequests:
-			if attempt >= maxAttempts {
-				return nil, fmt.Errorf("%w after %d attempts", ErrRateLimited, attempt)
+			wait, known := retryAfter(resp.Header, time.Now())
+			if attempt >= maxAttempts || wait > s.maxWait {
+				if !known {
+					wait = defaultCooldown
+				}
+				return nil, &limitError{reason: "reddit rate limited (429)", retryAfter: wait,
+					err: fmt.Errorf("%w after %d attempts", ErrRateLimited, attempt)}
 			}
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(retryAfter(resp.Header.Get("Retry-After"), s.maxWait)):
+			case <-time.After(wait):
 			}
 			continue
 		case resp.StatusCode == http.StatusForbidden:
@@ -280,14 +344,61 @@ func (s *Source) get(ctx context.Context, endpoint, accept string) ([]byte, erro
 	}
 }
 
-// retryAfter parses a Retry-After seconds header, capped at max.
-func retryAfter(h string, max time.Duration) time.Duration {
-	if h == "" {
-		return min(defaultRetryAfter, max)
+// retryAfter reads how long Reddit wants us to wait from Retry-After
+// (seconds or HTTP date) or x-ratelimit-reset (seconds). known is false when
+// neither header is usable, in which case defaultRetryAfter is returned.
+func retryAfter(h http.Header, now time.Time) (wait time.Duration, known bool) {
+	if v := strings.TrimSpace(h.Get("Retry-After")); v != "" {
+		if secs, err := strconv.ParseFloat(v, 64); err == nil && secs >= 0 {
+			return secondsToDuration(secs), true
+		}
+		if t, err := http.ParseTime(v); err == nil {
+			return max(t.Sub(now), 0), true
+		}
 	}
-	secs, err := strconv.Atoi(h)
-	if err != nil || secs < 0 {
-		return min(defaultRetryAfter, max)
+	if v := strings.TrimSpace(h.Get("X-Ratelimit-Reset")); v != "" {
+		if secs, err := strconv.ParseFloat(v, 64); err == nil && secs >= 0 {
+			return secondsToDuration(secs), true
+		}
 	}
-	return min(time.Duration(secs)*time.Second, max)
+	return defaultRetryAfter, false
+}
+
+func secondsToDuration(secs float64) time.Duration {
+	return time.Duration(secs * float64(time.Second)).Round(time.Second)
+}
+
+// skipped builds the non-fatal outcome reported to the collector.
+func skipped(reason string, retry time.Duration) *domain.SkippedError {
+	secs := int(retry.Round(time.Second) / time.Second)
+	return &domain.SkippedError{Reason: fmt.Sprintf("%s; retry after %ds", reason, secs), RetryAfter: retry}
+}
+
+// cooldowns remembers, per Reddit base URL, until when we must not call it.
+// Reddit limits per client IP, so the whole host shares one cooldown. Sources
+// are rebuilt every run, hence the package-level state.
+var cooldowns = struct {
+	sync.Mutex
+	until map[string]time.Time
+}{until: map[string]time.Time{}}
+
+func cooldownLeft(base string) time.Duration {
+	cooldowns.Lock()
+	defer cooldowns.Unlock()
+	return time.Until(cooldowns.until[base])
+}
+
+func setCooldown(base string, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	cooldowns.Lock()
+	defer cooldowns.Unlock()
+	cooldowns.until[base] = time.Now().Add(d)
+}
+
+func clearCooldown(base string) {
+	cooldowns.Lock()
+	defer cooldowns.Unlock()
+	delete(cooldowns.until, base)
 }
