@@ -23,6 +23,7 @@ import (
 	"github.com/jpdev/horizon-go/internal/domain"
 	"github.com/jpdev/horizon-go/internal/ingest"
 	"github.com/jpdev/horizon-go/internal/ports"
+	"github.com/jpdev/horizon-go/internal/retention"
 )
 
 // Store is the read side plus settings.
@@ -60,6 +61,11 @@ type AlertStore interface {
 	Alerts(ctx context.Context, since, now time.Time, stale time.Duration) ([]domain.Alert, error)
 }
 
+// CleanupRunner executes the protected 32-day retention operation.
+type CleanupRunner interface {
+	Cleanup(ctx context.Context, dryRun bool) (retention.Report, error)
+}
+
 // Check is a named dependency probe for /healthz.
 type Check struct {
 	Name string
@@ -76,6 +82,8 @@ type Server struct {
 	Pusher Pusher
 	// Alerts, when set, enables GET /api/admin/alerts (admin only).
 	Alerts AlertStore
+	// Cleanup, when set, enables POST /api/pipeline/cleanup (admin only).
+	Cleanup CleanupRunner
 	// AlertStale raises an alert when no fetch succeeded for this long
 	// (default 14h; negative disables it).
 	AlertStale time.Duration
@@ -147,6 +155,7 @@ func (s *Server) Handler() http.Handler {
 		r.Put("/settings", s.putSettings)
 		r.Get("/metrics", s.metrics)
 		r.Post("/pipeline/run", s.runPipeline)
+		r.Post("/pipeline/cleanup", s.cleanupPipeline)
 		r.Post("/items/ingest", s.ingestItems)
 		r.Get("/admin/alerts", s.adminAlerts)
 	})

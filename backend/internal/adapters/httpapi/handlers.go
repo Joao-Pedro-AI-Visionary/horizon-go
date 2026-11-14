@@ -487,6 +487,32 @@ func (s *Server) runPipeline(w http.ResponseWriter, r *http.Request) {
 	s.collect(w, r, func() (app.Report, error) { return s.Collector.Collect(r.Context(), since) })
 }
 
+func (s *Server) cleanupPipeline(w http.ResponseWriter, r *http.Request) {
+	if s.Cleanup == nil {
+		writeError(w, http.StatusNotImplemented, "cleanup is not configured")
+		return
+	}
+	dryRun := true
+	if raw := strings.TrimSpace(r.URL.Query().Get("dry_run")); raw != "" {
+		switch strings.ToLower(raw) {
+		case "true":
+			dryRun = true
+		case "false":
+			dryRun = false
+		default:
+			s.fail(w, r, domain.Invalidf("dry_run must be true or false"))
+			return
+		}
+	}
+	report, err := s.Cleanup.Cleanup(r.Context(), dryRun)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.log().Info("retention cleanup finished", "dry_run", report.DryRun, "cutoff", report.Cutoff, "counts", report.Counts)
+	writeJSON(w, http.StatusOK, report)
+}
+
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	st, err := s.Store.GetSettings(r.Context())
 	if err != nil {

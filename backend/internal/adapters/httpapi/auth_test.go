@@ -48,6 +48,7 @@ var writeRoutes = []struct{ method, path, body string }{
 	{http.MethodPost, "/api/sources/1/fetch", ""},
 	{http.MethodPut, "/api/settings", `{"score_threshold":6,"digest_max_items":10,"digest_per_source":0,"digest_cron":"0 7 * * *"}`},
 	{http.MethodPost, "/api/pipeline/run", ""},
+	{http.MethodPost, "/api/pipeline/cleanup?dry_run=true", ""},
 	{http.MethodPost, "/api/digests/generate", ""},
 	{http.MethodPost, "/api/auth/check", ""},
 	{http.MethodPost, "/api/items/ingest", `[{"source":"X","url":"https://x.com/a/status/1","title":"t"}]`},

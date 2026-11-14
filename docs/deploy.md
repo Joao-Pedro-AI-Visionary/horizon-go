@@ -266,6 +266,36 @@ O serviço do Render foi criado apontando pra branch de deploy. Quando os PRs
 forem mergeados, troque a branch do serviço pra `main` (*Settings → Build &
 Deploy → Branch*).
 
+## Retenção diária de 32 dias
+
+O workflow `.github/workflows/cleanup-retention.yml` roda às 01:00 em
+`America/Sao_Paulo` (`0 4 * * *` em UTC), acorda o Render por `/healthz` e
+chama `POST /api/pipeline/cleanup?dry_run=true` com `HORIZON_ADMIN_TOKEN`.
+Quando existem candidatos, o próprio workflow verifica se o conjunto é
+não-zero e menor que 80% do corpus antes de chamar uma única vez
+`dry_run=false`. Se o dry-run for zero ou perigoso, nenhuma linha é apagada.
+
+O cutoff retém 32 dias calendários e usa
+`COALESCE(items.published_at, items.fetched_at)` em `America/Sao_Paulo`. A
+transação remove primeiro `feed_view`, depois os auxiliares antigos
+(`digests`, `fetch_runs`, `alert_events`, `ai_cache` e `llm_usage`), depois
+`items` e por fim clusters sem itens. Embeddings, scores e itens da fonte
+push/X estão nas linhas de `items` e seguem com elas. `sources`, `settings` e
+credenciais administrativas nunca são removidos.
+
+Disparo manual (PowerShell; os valores dos tokens não são impressos no
+relatório):
+
+```powershell
+Invoke-WebRequest -Method Post -Uri "$env:HORIZON_API_URL/api/pipeline/cleanup?dry_run=true" -Headers @{ Authorization = "Bearer $env:HORIZON_ADMIN_TOKEN" }
+# Só após revisar as contagens e confirmar que não são zero/perigosas:
+Invoke-WebRequest -Method Post -Uri "$env:HORIZON_API_URL/api/pipeline/cleanup?dry_run=false" -Headers @{ Authorization = "Bearer $env:HORIZON_ADMIN_TOKEN" }
+```
+
+O schedule do GitHub só executa a partir da branch padrão; portanto este
+workflow precisa estar em `main`. A execução também pode ser iniciada pelo
+botão `workflow_dispatch` na aba Actions.
+
 ## Itens empurrados (radar do X)
 
 A API do X é paga, então os posts de alto engajamento chegam por push:

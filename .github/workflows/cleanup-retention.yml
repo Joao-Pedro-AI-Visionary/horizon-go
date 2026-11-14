@@ -1,0 +1,81 @@
+# Daily 32-day retention for the Render free service. This workflow always
+# dry-runs first; a real delete is allowed only when the candidate set is
+# non-zero and clearly smaller than the stored corpus.
+#
+# 01:00 America/Sao_Paulo (UTC-3) = 04:00 UTC.
+name: cleanup-retention
+
+on:
+  schedule:
+    - cron: "0 4 * * *" # 01:00 BRT
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: horizon-maintenance
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      API: ${{ secrets.HORIZON_API_URL }}
+      TOKEN: ${{ secrets.HORIZON_ADMIN_TOKEN }}
+    steps:
+      - name: Check secrets
+        run: |
+          test -n "$API" || { echo "::error::secret HORIZON_API_URL is not set"; exit 1; }
+          test -n "$TOKEN" || { echo "::error::secret HORIZON_ADMIN_TOKEN is not set"; exit 1; }
+      - name: Wake the service
+        run: |
+          for i in $(seq 1 10); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 90 "$API/healthz" || true)
+            echo "healthz attempt $i -> $code"
+            if [ "$code" = "200" ]; then exit 0; fi
+            sleep 20
+          done
+          exit 1
+      - name: Dry-run retention
+        id: dry
+        run: |
+          code=$(curl -sS -o /tmp/cleanup-dry.json -w '%{http_code}' --max-time 300 -X POST \
+            -H "Authorization: Bearer $TOKEN" "$API/api/pipeline/cleanup?dry_run=true" || echo 000)
+          echo "cleanup dry-run -> $code"
+          case "$code" in
+            200) cat /tmp/cleanup-dry.json;;
+            401|403) echo "::error::admin token rejected"; exit 1;;
+            *) echo "::error::dry-run failed"; exit 1;;
+          esac
+          items=$(jq -r '.counts.items // 0' /tmp/cleanup-dry.json)
+          total=$(jq -r '.counts.items_total // 0' /tmp/cleanup-dry.json)
+          feed=$(jq -r '.counts.feed_view // 0' /tmp/cleanup-dry.json)
+          test "$items" -ge 0
+          test "$total" -ge 0
+          test "$feed" -ge 0
+          echo "items=$items" >> "$GITHUB_OUTPUT"
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+          echo "feed=$feed" >> "$GITHUB_OUTPUT"
+      - name: Delete only a coherent non-zero candidate set
+        if: steps.dry.outputs.items != '0'
+        run: |
+          items=${{ steps.dry.outputs.items }}
+          total=${{ steps.dry.outputs.total }}
+          feed=${{ steps.dry.outputs.feed }}
+          if [ "$total" -eq 0 ] || [ "$items" -ge "$total" ] || [ "$items" -gt $((total * 80 / 100)) ]; then
+            echo "::error::retention candidate set is empty or dangerous; refusing real delete"
+            exit 1
+          fi
+          if [ "$feed" -gt "$items" ]; then
+            echo "::error::feed_view candidate count exceeds item candidate count"
+            exit 1
+          fi
+          code=$(curl -sS -o /tmp/cleanup-real.json -w '%{http_code}' --max-time 300 -X POST \
+            -H "Authorization: Bearer $TOKEN" "$API/api/pipeline/cleanup?dry_run=false" || echo 000)
+          echo "cleanup delete -> $code"
+          case "$code" in
+            200) cat /tmp/cleanup-real.json;;
+            401|403) echo "::error::admin token rejected"; exit 1;;
+            *) echo "::error::real cleanup failed"; exit 1;;
+          esac

@@ -54,6 +54,7 @@ import (
 	"github.com/jpdev/horizon-go/internal/digest"
 	"github.com/jpdev/horizon-go/internal/domain"
 	"github.com/jpdev/horizon-go/internal/ingest"
+	"github.com/jpdev/horizon-go/internal/retention"
 )
 
 func getenv(k, def string) string {
@@ -212,6 +213,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	srv := &httpapi.Server{
 		Store:   read,
 		Sources: sources,
+		Cleanup: &retention.Service{Store: postgres.CleanupRepo{DB: pool}},
 		Digests: &digest.Service{Store: read, Failures: read},
 		Alerts:  read,
 		Collector: &ingest.Pipeline{
