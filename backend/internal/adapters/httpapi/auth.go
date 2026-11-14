@@ -65,12 +65,22 @@ func (s *Server) authorized(tok string) bool {
 var publicWrites = map[string]bool{
 	"/api/auth/login": true, "/api/auth/logout": true,
 	"/api/auth/forgot": true, "/api/auth/reset": true,
+	"/api/newsletter/subscribe": true, "/api/newsletter/confirm": true, "/api/newsletter/unsubscribe": true,
+}
+
+func isPublicVotePath(p string) bool {
+	if !strings.HasPrefix(p, "/api/items/") || !strings.HasSuffix(p, "/vote") {
+		return false
+	}
+	idPart := strings.TrimSuffix(strings.TrimPrefix(p, "/api/items/"), "/vote")
+	return idPart != "" && !strings.Contains(idPart, "/")
 }
 
 func (s *Server) requireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		adminRead := strings.HasPrefix(r.URL.Path, "/api/admin/")
-		if (isRead(r.Method) && !adminRead) || s.WritesOpen() || publicWrites[r.URL.Path] {
+		publicVote := r.Method == http.MethodPost && isPublicVotePath(r.URL.Path)
+		if (isRead(r.Method) && !adminRead) || s.WritesOpen() || publicWrites[r.URL.Path] || publicVote {
 			next.ServeHTTP(w, r)
 			return
 		}

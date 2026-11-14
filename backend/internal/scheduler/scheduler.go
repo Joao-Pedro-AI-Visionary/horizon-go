@@ -19,19 +19,22 @@ import (
 const (
 	Timezone = retention.Timezone
 
-	JobCollect = "collect"
-	JobCleanup = "cleanup"
+	JobCollect    = "collect"
+	JobCleanup    = "cleanup"
+	JobNewsletter = "newsletter"
 
 	// Distinct Postgres advisory lock keys (do not collide with dedupLock = 7_202_602).
-	CollectLockID int64 = 7_202_610
-	CleanupLockID int64 = 7_202_611
-	MonitorLockID int64 = 7_202_612
+	CollectLockID    int64 = 7_202_610
+	CleanupLockID    int64 = 7_202_611
+	MonitorLockID    int64 = 7_202_612
+	NewsletterLockID int64 = 7_202_613
 
 	TriggerBootCatchup = "boot_catchup"
 	TriggerSchedule    = "schedule"
 
 	DefaultCollectTimeout     = 15 * time.Minute
 	DefaultCleanupTimeout     = 5 * time.Minute
+	DefaultNewsletterTimeout  = 5 * time.Minute
 	DefaultMissedCatchUpGrace = 3 * time.Minute
 	DefaultOverdueThreshold   = 3 * time.Hour
 	DefaultXIngestStaleAfter  = 36 * time.Hour
@@ -54,6 +57,11 @@ var DefaultCollectSlots = []TimeOfDay{
 // DefaultCleanupSlots runs daily at 01:00 America/Sao_Paulo (04:00 UTC).
 var DefaultCleanupSlots = []TimeOfDay{
 	{Hour: 1, Minute: 0},
+}
+
+// DefaultNewsletterSlots runs daily at 08:00 America/Sao_Paulo (11:00 UTC).
+var DefaultNewsletterSlots = []TimeOfDay{
+	{Hour: 8, Minute: 0},
 }
 
 // JobState is the persisted state for one scheduled job.
@@ -106,6 +114,19 @@ type Cleaner interface {
 	Cleanup(ctx context.Context, dryRun bool) (retention.Report, error)
 }
 
+// NewsletterOutcome summarizes a scheduled Top 5-7 newsletter dispatch.
+type NewsletterOutcome struct {
+	ItemCount  int
+	SentCount  int
+	Skipped    bool
+	SkipReason string
+}
+
+// NewsletterSender dispatches the daily Top 5-7 newsletter edition.
+type NewsletterSender interface {
+	SendScheduled(ctx context.Context, slot time.Time) (NewsletterOutcome, error)
+}
+
 // XIngestState reports the latest X (push) ingestion timestamps from storage.
 type XIngestState struct {
 	HasSource        bool
@@ -130,19 +151,22 @@ type Alerter interface {
 	XIngestStale(ctx context.Context, lastIngestAt, anchorAt *time.Time, at time.Time)
 }
 
-// Service coordinates scheduled collection and retention cleanup.
+// Service coordinates scheduled collection, newsletter dispatch and retention cleanup.
 type Service struct {
 	Store              Store
 	Collector          Collector
 	Cleaner            Cleaner
+	Newsletter         NewsletterSender
 	Alerter            Alerter
 	XIngest            XIngestStore
 	Timezone           string
 	CollectSlots       []TimeOfDay
 	CleanupSlots       []TimeOfDay
+	NewsletterSlots    []TimeOfDay
 	CollectCooldown    time.Duration
 	CollectTimeout     time.Duration
 	CleanupTimeout     time.Duration
+	NewsletterTimeout  time.Duration
 	MissedCatchUpGrace time.Duration // 0 uses DefaultMissedCatchUpGrace; negative disables grace
 	OverdueThreshold   time.Duration
 	XIngestStaleAfter  time.Duration
@@ -185,6 +209,20 @@ func (s *Service) cleanupSlots() []TimeOfDay {
 		return s.CleanupSlots
 	}
 	return DefaultCleanupSlots
+}
+
+func (s *Service) newsletterSlots() []TimeOfDay {
+	if len(s.NewsletterSlots) > 0 {
+		return s.NewsletterSlots
+	}
+	return DefaultNewsletterSlots
+}
+
+func (s *Service) newsletterTimeout() time.Duration {
+	if s.NewsletterTimeout > 0 {
+		return s.NewsletterTimeout
+	}
+	return DefaultNewsletterTimeout
 }
 
 func (s *Service) collectTimeout() time.Duration {
@@ -291,13 +329,19 @@ func (s *Service) nextEvent(after time.Time, loc *time.Location) (scheduledEvent
 			events = append(events, scheduledEvent{Job: JobCollect, Slot: t})
 		}
 	}
+	if s.Newsletter != nil {
+		if t := NextSlot(after, loc, s.newsletterSlots()); !t.IsZero() {
+			events = append(events, scheduledEvent{Job: JobNewsletter, Slot: t})
+		}
+	}
 	if len(events) == 0 {
 		return scheduledEvent{}, false
 	}
 	sort.SliceStable(events, func(i, j int) bool {
 		if events[i].Slot.Equal(events[j].Slot) {
-			// Never run both on the same instant; cleanup goes first, next loop handles collect.
-			return events[i].Job == JobCleanup
+			// Never run simultaneously on the same instant: cleanup -> collect -> newsletter.
+			order := map[string]int{JobCleanup: 0, JobCollect: 1, JobNewsletter: 2}
+			return order[events[i].Job] < order[events[j].Job]
 		}
 		return events[i].Slot.Before(events[j].Slot)
 	})
@@ -330,6 +374,17 @@ func (s *Service) CatchUp(ctx context.Context) error {
 			}
 		}
 	}
+	if ctx.Err() != nil {
+		errs = append(errs, ctx.Err())
+		return errors.Join(errs...)
+	}
+	if s.Newsletter != nil {
+		if slot := LatestSlot(s.now(), loc, s.newsletterSlots()); !slot.IsZero() {
+			if err := s.runNewsletterSlot(ctx, slot, TriggerBootCatchup); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
 	return errors.Join(errs...)
 }
 
@@ -349,6 +404,11 @@ func (s *Service) Run(ctx context.Context) error {
 	if s.Collector != nil {
 		if _, err := s.Store.EnsureJob(ctx, JobCollect, bootAt); err != nil {
 			s.log().Error("scheduler init failed", "job", JobCollect, "err", err)
+		}
+	}
+	if s.Newsletter != nil {
+		if _, err := s.Store.EnsureJob(ctx, JobNewsletter, bootAt); err != nil {
+			s.log().Error("scheduler init failed", "job", JobNewsletter, "err", err)
 		}
 	}
 	if err := s.CatchUp(ctx); err != nil && ctx.Err() == nil {
@@ -410,6 +470,8 @@ func (s *Service) Run(ctx context.Context) error {
 			runErr = s.runCleanupSlot(ctx, ev.Slot, TriggerSchedule)
 		case JobCollect:
 			runErr = s.runCollectSlot(ctx, ev.Slot, TriggerSchedule)
+		case JobNewsletter:
+			runErr = s.runNewsletterSlot(ctx, ev.Slot, TriggerSchedule)
 		}
 		if runErr != nil && ctx.Err() == nil {
 			s.log().Error("scheduled job failed", "job", ev.Job, "slot", ev.Slot.In(loc).Format(time.RFC3339), "err", runErr)
@@ -626,6 +688,83 @@ func (s *Service) runCleanupSlot(ctx context.Context, slot time.Time, trigger st
 	return nil
 }
 
+func (s *Service) runNewsletterSlot(ctx context.Context, slot time.Time, trigger string) error {
+	start := s.now()
+	log := s.log().With("job", JobNewsletter, "trigger", trigger, "slot", slot.Format(time.RFC3339))
+	log.Info("scheduler job start")
+
+	unlock, acquired, err := s.Store.TryLock(ctx, NewsletterLockID)
+	if err != nil {
+		log.Error("scheduler job error", "stage", "advisory_lock", "duration", s.now().Sub(start).Round(time.Millisecond), "err", err)
+		return fmt.Errorf("newsletter advisory lock: %w", err)
+	}
+	if !acquired {
+		log.Info("scheduler job skipped", "reason", "advisory_lock_held", "duration", s.now().Sub(start).Round(time.Millisecond))
+		return nil
+	}
+	defer unlock()
+
+	state, err := s.Store.EnsureJob(ctx, JobNewsletter, start)
+	if err != nil {
+		log.Error("scheduler job error", "stage", "load_state", "duration", s.now().Sub(start).Round(time.Millisecond), "err", err)
+		return fmt.Errorf("newsletter load state: %w", err)
+	}
+	if !slot.After(state.InstalledAt) {
+		log.Info("scheduler job skipped", "reason", "slot_before_install", "installed_at", state.InstalledAt.Format(time.RFC3339), "duration", s.now().Sub(start).Round(time.Millisecond))
+		return nil
+	}
+	if state.LastSlotAt != nil && !state.LastSlotAt.Before(slot) {
+		log.Info("scheduler job skipped", "reason", "slot_already_completed", "last_slot", state.LastSlotAt.Format(time.RFC3339), "duration", s.now().Sub(start).Round(time.Millisecond))
+		return nil
+	}
+
+	jctx, cancel := context.WithTimeout(ctx, s.newsletterTimeout())
+	defer cancel()
+
+	if s.Alerter != nil && slot.After(state.InstalledAt) {
+		delay := start.Sub(slot)
+		if (trigger == TriggerBootCatchup && delay > s.missedCatchUpGrace()) || delay > s.overdueThreshold() {
+			s.Alerter.JobMissed(ctx, JobNewsletter, slot, start, trigger == TriggerBootCatchup)
+		}
+	}
+
+	out, runErr := s.Newsletter.SendScheduled(jctx, slot)
+	finished := s.now()
+	dur := finished.Sub(start).Round(time.Millisecond)
+	if runErr != nil {
+		recErr := s.Store.RecordRun(context.WithoutCancel(ctx), JobNewsletter, RunRecord{
+			RunAt:  start,
+			Status: "error",
+			Error:  runErr.Error(),
+		})
+		log.Error("scheduler job error", "duration", dur, "err", runErr)
+		if s.Alerter != nil && ctx.Err() == nil {
+			s.Alerter.JobFailed(ctx, JobNewsletter, slot, finished, runErr)
+		}
+		return errors.Join(runErr, recErr)
+	}
+	prevFailed := state.LastStatus == "error"
+	status := "ok"
+	if out.Skipped {
+		status = "skipped"
+	}
+	if err := s.Store.RecordRun(context.WithoutCancel(ctx), JobNewsletter, RunRecord{
+		SlotAt:    &slot,
+		RunAt:     start,
+		SuccessAt: &finished,
+		Status:    status,
+		Error:     out.SkipReason,
+	}); err != nil {
+		log.Error("scheduler state persist failed", "duration", dur, "err", err)
+		return err
+	}
+	if prevFailed && s.Alerter != nil {
+		s.Alerter.JobRecovered(ctx, JobNewsletter, slot, finished)
+	}
+	log.Info("scheduler job done", "items", out.ItemCount, "sent", out.SentCount, "skipped", out.Skipped, "reason", out.SkipReason, "duration", dur)
+	return nil
+}
+
 // EvaluateXIngestStale returns whether the X (push) source is stale (> threshold
 // since last item, or > threshold since installation/source creation when no
 // items have been pushed yet) together with the relevant reference timestamp.
@@ -685,6 +824,7 @@ func (s *Service) CheckHealth(ctx context.Context) error {
 	}{
 		{s.Cleaner != nil, JobCleanup, s.cleanupSlots()},
 		{s.Collector != nil, JobCollect, s.collectSlots()},
+		{s.Newsletter != nil, JobNewsletter, s.newsletterSlots()},
 	}
 	for _, c := range checks {
 		if !c.enabled {

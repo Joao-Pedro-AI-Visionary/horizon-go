@@ -72,6 +72,13 @@ type CleanupRunner interface {
 	Cleanup(ctx context.Context, dryRun bool) (retention.Report, error)
 }
 
+// VoteStore persists anonymous per-device item votes and short-lived IP rate limits.
+type VoteStore interface {
+	Vote(ctx context.Context, itemID int64, deviceHash string, vote int) (domain.VoteResult, error)
+	CheckAndRecordRate(ctx context.Context, ipHash string, window time.Duration, maxVotes int, ttl time.Duration, now time.Time) (time.Duration, bool, error)
+	UserVote(ctx context.Context, itemID int64, deviceHash string) (int, error)
+}
+
 // Check is a named dependency probe for /healthz.
 type Check struct {
 	Name string
@@ -92,6 +99,13 @@ type Server struct {
 	AlertTester AlertTester
 	// Cleanup, when set, enables POST /api/pipeline/cleanup (admin only).
 	Cleanup CleanupRunner
+	// Votes, when set, enables anonymous per-device voting (POST /api/items/{id}/vote).
+	Votes          VoteStore
+	VoteHashSecret []byte
+	VoteMinDwell   time.Duration
+	VoteRateWindow time.Duration
+	VoteRateMax    int
+	VoteRateTTL    time.Duration
 	// AlertStale raises an alert when no fetch succeeded for this long
 	// (default 14h; negative disables it).
 	AlertStale time.Duration
@@ -103,6 +117,8 @@ type Server struct {
 	// Window is how far back a triggered collection looks (default 24h).
 	Window         time.Duration
 	AllowedOrigins []string
+	// FrontURL is the public frontend origin used in RSS/sitemap/canonical URLs.
+	FrontURL string
 	// CollectCooldown, when set, rejects a triggered collection (429 with
 	// Retry-After) that starts sooner than this after the previous one. It
 	// keeps a public deploy from burning the free model quotas.
@@ -119,7 +135,10 @@ type Server struct {
 	Login *Login
 	// Reset, when set, enables the "esqueci minha senha" e-mail.
 	Reset *PasswordReset
-	Log   *slog.Logger
+	// Newsletter enables public subscribe/confirm/unsubscribe and protected daily dispatch.
+	Newsletter        NewsletterService
+	NewsletterLimiter *LoginLimiter
+	Log               *slog.Logger
 
 	collecting  sync.Mutex
 	lastCollect time.Time // guarded by collecting
@@ -150,6 +169,12 @@ func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, middleware.RealIP, s.requestLog, middleware.Recoverer, s.cors)
 	r.Get("/healthz", s.healthz)
+	r.Get("/robots.txt", s.robotsTxt)
+	r.Get("/sitemap.xml", s.sitemapXML)
+	r.Get("/rss.xml", s.rssFeed)
+	r.Get("/digests/rss.xml", s.rssDigests)
+	r.Get("/items/{id}", s.itemPublicHTML)
+	r.Get("/og/items/{file}", s.itemOGImage)
 	r.Route("/api", func(r chi.Router) {
 		r.Use(func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -168,6 +193,17 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/feed", s.feed)
 		r.Get("/feed/timeline", s.feedTimeline)
 		r.Get("/items/{id}", s.item)
+		r.Post("/items/{id}/vote", s.voteItem)
+		r.Get("/og/items/{file}", s.itemOGImage)
+		r.Get("/rss/feed.xml", s.rssFeed)
+		r.Get("/rss/digests.xml", s.rssDigests)
+		r.Get("/sitemap.xml", s.sitemapXML)
+		r.Post("/newsletter/subscribe", s.subscribeNewsletter)
+		r.Post("/newsletter/confirm", s.confirmNewsletter)
+		r.Get("/newsletter/confirm", s.confirmNewsletter)
+		r.Post("/newsletter/unsubscribe", s.unsubscribeNewsletter)
+		r.Get("/newsletter/unsubscribe", s.unsubscribeNewsletter)
+		r.Post("/newsletter/send", s.sendNewsletter)
 		r.Get("/digests", s.listDigests)
 		r.Post("/digests/generate", s.generateDigest)
 		r.Get("/digests/{date}", s.getDigest)
@@ -219,6 +255,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 		}
 		if ok {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
 		}
 		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 			if !ok {
@@ -226,7 +263,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 				return
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, X-Request-Id")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, X-Request-Id, X-Device-Id")
 			w.Header().Set("Access-Control-Max-Age", "600")
 			w.WriteHeader(http.StatusNoContent)
 			return

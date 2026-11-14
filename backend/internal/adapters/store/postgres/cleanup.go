@@ -106,6 +106,9 @@ SELECT id FROM items WHERE `+cleanupItemPredicate, p.Cutoff); err != nil {
 		}
 		counts[item.name] = int64(tag.RowsAffected())
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM vote_rate_limits WHERE expires_at <= now()`); err != nil {
+		return nil, fmt.Errorf("prune vote_rate_limits: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit cleanup: %w", err)
 	}

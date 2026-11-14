@@ -824,3 +824,66 @@ func TestEvaluateXIngestStaleAndCheckHealth(t *testing.T) {
 		t.Fatalf("expected CheckHealth x_ingest_stale alert, got %+v", al.events)
 	}
 }
+
+type fakeNewsletterSender struct {
+	mu    sync.Mutex
+	calls []time.Time
+}
+
+func (f *fakeNewsletterSender) SendScheduled(_ context.Context, slot time.Time) (NewsletterOutcome, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, slot)
+	return NewsletterOutcome{ItemCount: 6, SentCount: 2}, nil
+}
+
+func TestNewsletterScheduleAnchorAdvisoryLockAndCatchup(t *testing.T) {
+	loc, _ := time.LoadLocation(Timezone)
+	store := newMemStore()
+	nl := &fakeNewsletterSender{}
+
+	// Installed at 09:00 BRT -> 08:00 BRT slot earlier that day must NOT run on CatchUp (anchored on installed_at).
+	installAt := time.Date(2026, 11, 14, 9, 0, 0, 0, loc)
+	_, _ = store.EnsureJob(context.Background(), JobNewsletter, installAt)
+	svc := &Service{
+		Store:      store,
+		Newsletter: nl,
+		Now:        func() time.Time { return installAt.Add(15 * time.Minute) },
+		Log:        slog.New(slog.DiscardHandler),
+	}
+	if err := svc.CatchUp(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(nl.calls) != 0 {
+		t.Fatalf("pre-install 08:00 slot must not trigger, got %v", nl.calls)
+	}
+
+	// Next day 08:10 BRT: 08:00 slot IS after installed_at. When advisory lock is held by another instance, skip cleanly.
+	nextDay := time.Date(2026, 11, 15, 8, 10, 0, 0, loc)
+	svc.Now = func() time.Time { return nextDay }
+	unlock, ok, err := store.TryLock(context.Background(), NewsletterLockID)
+	if err != nil || !ok {
+		t.Fatalf("expected test lock acquisition: %v %v", ok, err)
+	}
+	if err := svc.CatchUp(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(nl.calls) != 0 {
+		t.Fatalf("locked newsletter slot must skip, got %v", nl.calls)
+	}
+	unlock()
+
+	// After releasing advisory lock, CatchUp runs the missed 08:00 BRT slot once and records LastSlotAt.
+	if err := svc.CatchUp(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(nl.calls) != 1 || nl.calls[0].In(loc).Hour() != 8 || nl.calls[0].In(loc).Minute() != 0 {
+		t.Fatalf("expected 08:00 BRT catch-up send, got %v", nl.calls)
+	}
+	if err := svc.CatchUp(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(nl.calls) != 1 {
+		t.Fatalf("duplicate catch-up for same slot must skip, got %d", len(nl.calls))
+	}
+}
