@@ -213,6 +213,28 @@ aceita destinatário**: o link vai só pra `RESET_EMAIL_TO`, via Resend
 3. Pra derrubar todas as sessões abertas, troque também o `SESSION_SECRET`
    (`openssl rand -hex 32`).
 
+### Alertas operacionais (e-mail + badge)
+
+A API reaproveita `RESEND_API_KEY`, `RESET_FROM` e `RESET_EMAIL_TO` (sem precisar de
+`FRONT_URL`) para enviar alertas operacionais por e-mail e registrá-los em
+`alert_events` (exibidos no badge admin em `GET /api/admin/alerts`):
+
+- `job_failed`: coleta ou limpeza do agendador interno falhou.
+- `job_missed`: slot posterior a `installed_at` passou do horário (catch-up acima
+  da janela de tolerância ou atraso > 3 h sem execução).
+- `cleanup_blocked`: limpeza bloqueada pelas travas `retention.CanDelete` com
+  candidatos (`items > 0`), incluindo motivo e contagens.
+- `x_ingest_stale`: fonte ativa de X (`kind = 'push'`) sem novos itens (`items.fetched_at`)
+  há mais de 36 h (respeitando carência inicial de 36 h desde `installed_at` /
+  criação da fonte antes da primeira ingestão).
+- `job_recovered`: job de coleta ou limpeza voltou a concluir com sucesso após uma falha.
+
+Regras: cooldown persistido no Postgres em `alert_cooldowns` de **6 h por tipo**
+entre instâncias para e-mails (eventos continuam entrando no badge mesmo quando o
+e-mail é suprimido por cooldown; sem Resend configurado, grava só o badge e loga sem
+falhar o job). Rota admin opcional de teste: `POST /api/admin/alerts/test`
+(requer token/sessão admin).
+
 ## Variáveis (referência)
 
 Veja `.env.production.example`. Resumo:
@@ -227,8 +249,8 @@ Veja `.env.production.example`. Resumo:
 | `ADMIN_USERNAME` | config | usuário do login do painel |
 | `ADMIN_PASSWORD_HASH` | segredo | hash bcrypt da senha (`ADMIN_PASSWORD` em texto puro é aceito como fallback) |
 | `SESSION_SECRET` | segredo | chave HMAC das sessões de 12 h (32+ caracteres) |
-| `RESEND_API_KEY` | segredo | envio do e-mail de "esqueci minha senha" (Resend) |
-| `RESET_EMAIL_TO` | config | único destinatário do link de redefinição |
+| `RESEND_API_KEY` | segredo | envio de "esqueci minha senha" e alertas operacionais (Resend) |
+| `RESET_EMAIL_TO` | config | único destinatário de redefinição de senha e alertas operacionais |
 | `RESET_FROM` | config | remetente (padrão `Horizon <onboarding@resend.dev>`) |
 | `FRONT_URL` | config | URL do painel usada no link (`https://horizon-web-eight.vercel.app`) |
 | `HORIZON_ENV` | `production` | liga o fail-closed (o Render também é detectado por `RENDER`) |

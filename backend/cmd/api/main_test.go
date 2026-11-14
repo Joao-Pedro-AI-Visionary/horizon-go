@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jpdev/horizon-go/internal/adapters/mail/resend"
 	"github.com/jpdev/horizon-go/internal/config"
 )
 
@@ -92,5 +93,61 @@ func TestInternalSchedulerMode(t *testing.T) {
 	}
 	if _, _, err := config.ResolveInternalScheduler(env(map[string]string{"INTERNAL_SCHEDULER": "true"})); err == nil {
 		t.Fatal("expected error enabling INTERNAL_SCHEDULER while worker COLLECT_INTERVAL is active")
+	}
+}
+
+func TestMailerAndOpsAlertsFromEnv(t *testing.T) {
+	log := slog.New(slog.DiscardHandler)
+	env := func(m map[string]string) func(string) string {
+		return func(k string) string { return m[k] }
+	}
+
+	// Missing key or recipient keeps Mailer strictly nil (never typed-nil).
+	for _, m := range []map[string]string{
+		nil,
+		{"RESEND_API_KEY": "re_test_123456"},
+		{"RESET_EMAIL_TO": "admin@example.invalid"},
+	} {
+		svc := opsAlertsFromEnv(env(m), nil, log)
+		if svc.Mailer != nil {
+			t.Fatalf("%v: expected Mailer == nil, got %T", m, svc.Mailer)
+		}
+		if r := resetFromEnv(env(m)); r != nil {
+			t.Fatalf("%v: expected nil resetFromEnv, got %+v", m, r)
+		}
+	}
+
+	// Without FRONT_URL, password reset stays disabled while ops alerts still use Resend + default RESET_FROM.
+	noFront := env(map[string]string{
+		"RESEND_API_KEY": "re_test_123456",
+		"RESET_EMAIL_TO": "admin@example.invalid",
+	})
+	if r := resetFromEnv(noFront); r != nil {
+		t.Fatalf("expected nil PasswordReset without FRONT_URL, got %+v", r)
+	}
+	ops := opsAlertsFromEnv(noFront, nil, log)
+	rc, ok := ops.Mailer.(*resend.Client)
+	if !ok || rc == nil {
+		t.Fatalf("expected *resend.Client, got %T", ops.Mailer)
+	}
+	if rc.From != "Horizon <onboarding@resend.dev>" || ops.To != "admin@example.invalid" {
+		t.Fatalf("unexpected mailer config: from=%q to=%q", rc.From, ops.To)
+	}
+
+	// Custom RESET_FROM + FRONT_URL configures both consistently.
+	custom := env(map[string]string{
+		"RESEND_API_KEY": "re_test_123456",
+		"RESET_EMAIL_TO": "admin@example.invalid",
+		"RESET_FROM":     "Alerts <alerts@horizon.example>",
+		"FRONT_URL":      "https://horizon.example",
+	})
+	opsCustom := opsAlertsFromEnv(custom, nil, log)
+	rcCustom := opsCustom.Mailer.(*resend.Client)
+	if rcCustom.From != "Alerts <alerts@horizon.example>" {
+		t.Fatalf("unexpected custom from: %q", rcCustom.From)
+	}
+	rCustom := resetFromEnv(custom)
+	if rCustom == nil || !rCustom.Enabled() || rCustom.To != "admin@example.invalid" {
+		t.Fatalf("expected enabled PasswordReset with custom env, got %+v", rCustom)
 	}
 }

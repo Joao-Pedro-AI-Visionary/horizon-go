@@ -22,7 +22,8 @@
 //	                is accepted as a fallback and hashed at startup)
 //	SESSION_SECRET  HMAC key of the 12 h session tokens (random per boot if unset)
 //	RESEND_API_KEY, RESET_EMAIL_TO, FRONT_URL  enable "esqueci minha senha":
-//	                a 30 min single-use link to RESET_EMAIL_TO only
+//	                a 30 min single-use link to RESET_EMAIL_TO only. RESEND_API_KEY +
+//	                RESET_EMAIL_TO alone also enable operational alert e-mails.
 //	RESET_FROM      sender (default "Horizon <onboarding@resend.dev>")
 //	HORIZON_ENV     "production" (or running on Render) refuses writes while
 //	                HORIZON_ADMIN_TOKEN is unset (fail closed)
@@ -57,6 +58,7 @@ import (
 	"github.com/jpdev/horizon-go/internal/digest"
 	"github.com/jpdev/horizon-go/internal/domain"
 	"github.com/jpdev/horizon-go/internal/ingest"
+	"github.com/jpdev/horizon-go/internal/opsalerts"
 	"github.com/jpdev/horizon-go/internal/retention"
 	"github.com/jpdev/horizon-go/internal/scheduler"
 )
@@ -139,27 +141,59 @@ func loginFromEnv(lookup func(string) string, log *slog.Logger) (*httpapi.Login,
 	}, nil
 }
 
-// resetFromEnv enables "esqueci minha senha" when RESEND_API_KEY,
-// RESET_EMAIL_TO and FRONT_URL are set. The link only ever goes to
-// RESET_EMAIL_TO.
-func resetFromEnv(lookup func(string) string) *httpapi.PasswordReset {
+// mailerFromEnv returns the configured Resend client and admin recipient
+// (RESET_EMAIL_TO) when RESEND_API_KEY and RESET_EMAIL_TO are set, using
+// RESET_FROM (default "Horizon <onboarding@resend.dev>").
+func mailerFromEnv(lookup func(string) string) (*resend.Client, string) {
 	key := strings.TrimSpace(lookup("RESEND_API_KEY"))
 	to := strings.TrimSpace(lookup("RESET_EMAIL_TO"))
-	front := strings.TrimSpace(lookup("FRONT_URL"))
-	if key == "" || to == "" || front == "" {
-		return nil
+	if key == "" || to == "" {
+		return nil, ""
 	}
 	from := strings.TrimSpace(lookup("RESET_FROM"))
 	if from == "" {
 		from = "Horizon <onboarding@resend.dev>"
 	}
+	return &resend.Client{APIKey: key, From: from}, to
+}
+
+// resetFromEnv enables "esqueci minha senha" when RESEND_API_KEY,
+// RESET_EMAIL_TO and FRONT_URL are set. The link only ever goes to
+// RESET_EMAIL_TO.
+func resetFromEnv(lookup func(string) string) *httpapi.PasswordReset {
+	mailer, to := mailerFromEnv(lookup)
+	front := strings.TrimSpace(lookup("FRONT_URL"))
+	if mailer == nil || front == "" {
+		return nil
+	}
 	return &httpapi.PasswordReset{
-		Mailer:     &resend.Client{APIKey: key, From: from},
+		Mailer:     mailer,
 		To:         to,
 		FrontURL:   front,
 		TTL:        httpapi.DefaultResetTTL,
 		Limiter:    &httpapi.LoginLimiter{Max: 3, Window: 15 * time.Minute, MaxBlock: time.Hour},
 		MaxPerHour: 5,
+	}
+}
+
+func opsAlertsFromEnv(lookup func(string) string, store opsalerts.Store, log *slog.Logger) *opsalerts.Service {
+	var mailer opsalerts.Mailer
+	if rc, to := mailerFromEnv(lookup); rc != nil {
+		mailer = rc
+		return &opsalerts.Service{
+			Store:    store,
+			Mailer:   mailer,
+			To:       to,
+			Cooldown: opsalerts.DefaultCooldown,
+			Timezone: opsalerts.DefaultTimezone,
+			Log:      log,
+		}
+	}
+	return &opsalerts.Service{
+		Store:    store,
+		Cooldown: opsalerts.DefaultCooldown,
+		Timezone: opsalerts.DefaultTimezone,
+		Log:      log,
 	}
 }
 
@@ -218,13 +252,15 @@ func run(ctx context.Context, log *slog.Logger) error {
 	read := postgres.ReadRepo{DB: pool}
 	sources := postgres.SourceRepo{DB: pool}
 	schedRepo := postgres.SchedulerRepo{DB: pool}
+	opsAlerts := opsAlertsFromEnv(os.Getenv, read, log)
 	collector := &app.Collector{Publisher: bus, Runs: postgres.FetchRunRepo{DB: pool}, Timeout: timeout, Log: log}
 	srv := &httpapi.Server{
-		Store:   read,
-		Sources: sources,
-		Cleanup: &retention.Service{Store: postgres.CleanupRepo{DB: pool}},
-		Digests: &digest.Service{Store: read, Failures: read},
-		Alerts:  read,
+		Store:       read,
+		Sources:     sources,
+		Cleanup:     &retention.Service{Store: postgres.CleanupRepo{DB: pool}},
+		Digests:     &digest.Service{Store: read, Failures: read},
+		Alerts:      read,
+		AlertTester: opsAlerts,
 		Collector: &ingest.Pipeline{
 			Sources:   sources,
 			Collector: collector,
@@ -277,6 +313,8 @@ func run(ctx context.Context, log *slog.Logger) error {
 			Store:           schedRepo,
 			Collector:       srv,
 			Cleaner:         srv.Cleanup,
+			Alerter:         opsalerts.SchedulerBridge{Service: opsAlerts},
+			XIngest:         read,
 			CollectCooldown: srv.CollectCooldown,
 			Log:             log,
 		}
@@ -291,7 +329,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	errc := make(chan error, 1)
 	go func() {
 		log.Info("api listening", "addr", hs.Addr, "cors", srv.AllowedOrigins,
-			"admin_token", srv.AdminToken != "", "login", srv.Login.Enabled(), "password_reset", srv.Reset.Enabled(), "writes_open", srv.WritesOpen())
+			"admin_token", srv.AdminToken != "", "login", srv.Login.Enabled(), "password_reset", srv.Reset.Enabled(), "ops_alerts_email", opsAlerts.Mailer != nil, "writes_open", srv.WritesOpen())
 		errc <- hs.ListenAndServe()
 	}()
 	var exitErr error

@@ -7,7 +7,13 @@ import (
 	"time"
 
 	"github.com/jpdev/horizon-go/internal/domain"
+	"github.com/jpdev/horizon-go/internal/opsalerts"
 )
+
+type testAlertDTO struct {
+	opsalerts.NotifyResult
+	Error string `json:"error,omitempty"`
+}
 
 // DefaultAlertStale is how long without a successful fetch raises an alert
 // (the schedule collects at 07:30 and 16:30 BRT, ~9h and ~15h apart).
@@ -48,6 +54,23 @@ func (s *Server) adminAlerts(w http.ResponseWriter, r *http.Request) {
 	}
 	list = dedupeAlerts(list)
 	writeJSON(w, http.StatusOK, alertsDTO{Count: len(list), Since: since, Alerts: list})
+}
+
+// adminAlertTest (POST /api/admin/alerts/test, admin only) records one test
+// operational alert in the admin badge and attempts to send a test e-mail.
+func (s *Server) adminAlertTest(w http.ResponseWriter, r *http.Request) {
+	if s.AlertTester == nil {
+		writeError(w, http.StatusNotFound, "alert test not enabled")
+		return
+	}
+	res := s.AlertTester.SendTest(r.Context())
+	out := testAlertDTO{NotifyResult: res}
+	if res.Err != nil {
+		out.Error = opsalerts.SanitizeText(res.Err.Error(), 240)
+		writeJSON(w, http.StatusBadGateway, out)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // dedupeAlerts keeps the newest alert per kind and source (or name) and

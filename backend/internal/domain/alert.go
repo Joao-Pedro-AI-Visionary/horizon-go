@@ -4,10 +4,16 @@ import "time"
 
 // Alert kinds.
 const (
-	AlertSource     = "source"     // the latest fetch of a source failed
-	AlertScoring    = "scoring"    // items of a source could not be scored
-	AlertDigest     = "digest"     // digest generation failed
-	AlertCollection = "collection" // no successful collection for too long
+	AlertSource         = "source"          // the latest fetch of a source failed
+	AlertScoring        = "scoring"         // items of a source could not be scored
+	AlertDigest         = "digest"          // digest generation failed
+	AlertCollection     = "collection"      // no successful collection for too long
+	AlertJobFailed      = "job_failed"      // internal scheduler collect or cleanup failed
+	AlertJobMissed      = "job_missed"      // scheduled slot missed on catch-up or overdue > 3h
+	AlertCleanupBlocked = "cleanup_blocked" // retention cleanup blocked by safety guards
+	AlertXIngestStale   = "x_ingest_stale"  // no X (push) posts ingested for > 36h
+	AlertJobRecovered   = "job_recovered"   // internal scheduler job succeeded after a prior error
+	AlertTest           = "test"            // manual operational alert verification
 )
 
 // Alert is one recent failure for the admin dashboard.

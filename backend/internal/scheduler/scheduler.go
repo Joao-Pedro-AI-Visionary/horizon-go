@@ -25,12 +25,17 @@ const (
 	// Distinct Postgres advisory lock keys (do not collide with dedupLock = 7_202_602).
 	CollectLockID int64 = 7_202_610
 	CleanupLockID int64 = 7_202_611
+	MonitorLockID int64 = 7_202_612
 
 	TriggerBootCatchup = "boot_catchup"
 	TriggerSchedule    = "schedule"
 
-	DefaultCollectTimeout = 15 * time.Minute
-	DefaultCleanupTimeout = 5 * time.Minute
+	DefaultCollectTimeout     = 15 * time.Minute
+	DefaultCleanupTimeout     = 5 * time.Minute
+	DefaultMissedCatchUpGrace = 3 * time.Minute
+	DefaultOverdueThreshold   = 3 * time.Hour
+	DefaultXIngestStaleAfter  = 36 * time.Hour
+	DefaultMonitorInterval    = 15 * time.Minute
 )
 
 // TimeOfDay represents a daily wall-clock time (hour 0..23, minute 0..59) in
@@ -101,19 +106,49 @@ type Cleaner interface {
 	Cleanup(ctx context.Context, dryRun bool) (retention.Report, error)
 }
 
+// XIngestState reports the latest X (push) ingestion timestamps from storage.
+type XIngestState struct {
+	HasSource        bool
+	HasEnabledSource bool
+	SourceCreatedAt  *time.Time
+	LastIngestAt     *time.Time
+	InstalledAt      *time.Time
+}
+
+// XIngestStore queries X (push) source ingestion freshness.
+type XIngestStore interface {
+	XIngestStatus(ctx context.Context) (XIngestState, error)
+}
+
+// Alerter dispatches operational alerts for job failures, missed/overdue slots,
+// blocked cleanups, stale X ingestion, and recoveries.
+type Alerter interface {
+	JobFailed(ctx context.Context, job string, slot, at time.Time, err error)
+	JobRecovered(ctx context.Context, job string, slot, at time.Time)
+	JobMissed(ctx context.Context, job string, slot, at time.Time, viaCatchUp bool)
+	CleanupBlocked(ctx context.Context, slot, at time.Time, dec retention.DeleteDecision)
+	XIngestStale(ctx context.Context, lastIngestAt, anchorAt *time.Time, at time.Time)
+}
+
 // Service coordinates scheduled collection and retention cleanup.
 type Service struct {
-	Store           Store
-	Collector       Collector
-	Cleaner         Cleaner
-	Timezone        string
-	CollectSlots    []TimeOfDay
-	CleanupSlots    []TimeOfDay
-	CollectCooldown time.Duration
-	CollectTimeout  time.Duration
-	CleanupTimeout  time.Duration
-	Now             func() time.Time
-	Log             *slog.Logger
+	Store              Store
+	Collector          Collector
+	Cleaner            Cleaner
+	Alerter            Alerter
+	XIngest            XIngestStore
+	Timezone           string
+	CollectSlots       []TimeOfDay
+	CleanupSlots       []TimeOfDay
+	CollectCooldown    time.Duration
+	CollectTimeout     time.Duration
+	CleanupTimeout     time.Duration
+	MissedCatchUpGrace time.Duration // 0 uses DefaultMissedCatchUpGrace; negative disables grace
+	OverdueThreshold   time.Duration
+	XIngestStaleAfter  time.Duration
+	MonitorInterval    time.Duration
+	Now                func() time.Time
+	Log                *slog.Logger
 }
 
 func (s *Service) log() *slog.Logger {
@@ -164,6 +199,37 @@ func (s *Service) cleanupTimeout() time.Duration {
 		return s.CleanupTimeout
 	}
 	return DefaultCleanupTimeout
+}
+
+func (s *Service) missedCatchUpGrace() time.Duration {
+	if s.MissedCatchUpGrace < 0 {
+		return 0
+	}
+	if s.MissedCatchUpGrace > 0 {
+		return s.MissedCatchUpGrace
+	}
+	return DefaultMissedCatchUpGrace
+}
+
+func (s *Service) overdueThreshold() time.Duration {
+	if s.OverdueThreshold > 0 {
+		return s.OverdueThreshold
+	}
+	return DefaultOverdueThreshold
+}
+
+func (s *Service) xIngestStaleAfter() time.Duration {
+	if s.XIngestStaleAfter > 0 {
+		return s.XIngestStaleAfter
+	}
+	return DefaultXIngestStaleAfter
+}
+
+func (s *Service) monitorInterval() time.Duration {
+	if s.MonitorInterval > 0 {
+		return s.MonitorInterval
+	}
+	return DefaultMonitorInterval
 }
 
 // LatestSlot returns the most recent scheduled slot at or before now in loc.
@@ -288,6 +354,9 @@ func (s *Service) Run(ctx context.Context) error {
 	if err := s.CatchUp(ctx); err != nil && ctx.Err() == nil {
 		s.log().Error("scheduler boot catch-up finished with errors", "err", err)
 	}
+	if err := s.CheckHealth(ctx); err != nil && ctx.Err() == nil {
+		s.log().Warn("scheduler boot health check failed", "err", err)
+	}
 
 	// Start the future schedule cursor at bootAt so a boundary crossed while
 	// CatchUp was running is never skipped.
@@ -314,12 +383,24 @@ func (s *Service) Run(ctx context.Context) error {
 			if wait <= 0 {
 				break
 			}
-			timer := time.NewTimer(wait)
+			interval := s.monitorInterval()
+			sleep := wait
+			checkAfter := false
+			if s.Alerter != nil && interval > 0 && sleep > interval {
+				sleep = interval
+				checkAfter = true
+			}
+			timer := time.NewTimer(sleep)
 			select {
 			case <-ctx.Done():
 				timer.Stop()
 				return nil
 			case <-timer.C:
+			}
+			if checkAfter {
+				if err := s.CheckHealth(ctx); err != nil && ctx.Err() == nil {
+					s.log().Warn("scheduler health check failed", "err", err)
+				}
 			}
 		}
 
@@ -376,6 +457,13 @@ func (s *Service) runCollectSlot(ctx context.Context, slot time.Time, trigger st
 	jctx, cancel := context.WithTimeout(ctx, s.collectTimeout())
 	defer cancel()
 
+	if s.Alerter != nil && slot.After(state.InstalledAt) {
+		delay := start.Sub(slot)
+		if (trigger == TriggerBootCatchup && delay > s.missedCatchUpGrace()) || delay > s.overdueThreshold() {
+			s.Alerter.JobMissed(ctx, JobCollect, slot, start, trigger == TriggerBootCatchup)
+		}
+	}
+
 	out, runErr := s.Collector.RunScheduledCollect(jctx)
 	finished := s.now()
 	dur := finished.Sub(start).Round(time.Millisecond)
@@ -391,8 +479,12 @@ func (s *Service) runCollectSlot(ctx context.Context, slot time.Time, trigger st
 			Error:  runErr.Error(),
 		})
 		log.Error("scheduler job error", "run_id", out.RunID, "fetched", out.Fetched, "published", out.Published, "duration", dur, "err", runErr)
+		if s.Alerter != nil && ctx.Err() == nil {
+			s.Alerter.JobFailed(ctx, JobCollect, slot, finished, runErr)
+		}
 		return errors.Join(runErr, recErr)
 	}
+	prevFailed := state.LastStatus == "error"
 	if err := s.Store.RecordRun(context.WithoutCancel(ctx), JobCollect, RunRecord{
 		SlotAt:    &slot,
 		RunAt:     start,
@@ -401,6 +493,9 @@ func (s *Service) runCollectSlot(ctx context.Context, slot time.Time, trigger st
 	}); err != nil {
 		log.Error("scheduler state persist failed", "run_id", out.RunID, "duration", dur, "err", err)
 		return err
+	}
+	if prevFailed && s.Alerter != nil {
+		s.Alerter.JobRecovered(ctx, JobCollect, slot, finished)
 	}
 	log.Info("scheduler job done", "run_id", out.RunID, "fetched", out.Fetched, "published", out.Published, "duplicates", out.Duplicates, "invalid", out.Invalid, "duration", dur)
 	return nil
@@ -439,18 +534,30 @@ func (s *Service) runCleanupSlot(ctx context.Context, slot time.Time, trigger st
 	jctx, cancel := context.WithTimeout(ctx, s.cleanupTimeout())
 	defer cancel()
 
+	if s.Alerter != nil && slot.After(state.InstalledAt) {
+		delay := start.Sub(slot)
+		if (trigger == TriggerBootCatchup && delay > s.missedCatchUpGrace()) || delay > s.overdueThreshold() {
+			s.Alerter.JobMissed(ctx, JobCleanup, slot, start, trigger == TriggerBootCatchup)
+		}
+	}
+
 	dry, err := s.Cleaner.Cleanup(jctx, true)
 	if err != nil {
-		dur := s.now().Sub(start).Round(time.Millisecond)
+		finished := s.now()
+		dur := finished.Sub(start).Round(time.Millisecond)
 		recErr := s.Store.RecordRun(context.WithoutCancel(ctx), JobCleanup, RunRecord{
 			RunAt:  start,
 			Status: "error",
 			Error:  err.Error(),
 		})
 		log.Error("scheduler job error", "stage", "dry_run", "duration", dur, "err", err)
+		if s.Alerter != nil && ctx.Err() == nil {
+			s.Alerter.JobFailed(ctx, JobCleanup, slot, finished, err)
+		}
 		return errors.Join(err, recErr)
 	}
 
+	prevFailed := state.LastStatus == "error"
 	dec := retention.CanDelete(dry.Counts)
 	if !dec.Allow {
 		finished := s.now()
@@ -467,6 +574,9 @@ func (s *Service) runCleanupSlot(ctx context.Context, slot time.Time, trigger st
 				return recErr
 			}
 			log.Info("scheduler job skipped", "reason", dec.Reason, "dry_run", true, "cutoff", dry.Cutoff, "counts", dry.Counts, "duration", dur)
+			if prevFailed && s.Alerter != nil {
+				s.Alerter.JobRecovered(ctx, JobCleanup, slot, finished)
+			}
 			return nil
 		}
 		if recErr := s.Store.RecordRun(context.WithoutCancel(ctx), JobCleanup, RunRecord{
@@ -479,6 +589,9 @@ func (s *Service) runCleanupSlot(ctx context.Context, slot time.Time, trigger st
 			return recErr
 		}
 		log.Warn("scheduler job skipped", "reason", dec.Reason, "blocked", true, "dry_run", true, "cutoff", dry.Cutoff, "counts", dry.Counts, "duration", dur)
+		if s.Alerter != nil {
+			s.Alerter.CleanupBlocked(ctx, slot, finished, dec)
+		}
 		return nil
 	}
 
@@ -492,6 +605,9 @@ func (s *Service) runCleanupSlot(ctx context.Context, slot time.Time, trigger st
 			Error:  err.Error(),
 		})
 		log.Error("scheduler job error", "stage", "delete", "dry_counts", dry.Counts, "duration", dur, "err", err)
+		if s.Alerter != nil && ctx.Err() == nil {
+			s.Alerter.JobFailed(ctx, JobCleanup, slot, finished, err)
+		}
 		return errors.Join(err, recErr)
 	}
 	if err := s.Store.RecordRun(context.WithoutCancel(ctx), JobCleanup, RunRecord{
@@ -503,6 +619,104 @@ func (s *Service) runCleanupSlot(ctx context.Context, slot time.Time, trigger st
 		log.Error("scheduler state persist failed", "duration", dur, "err", err)
 		return err
 	}
+	if prevFailed && s.Alerter != nil {
+		s.Alerter.JobRecovered(ctx, JobCleanup, slot, finished)
+	}
 	log.Info("scheduler job done", "dry_run", false, "cutoff", realRep.Cutoff, "dry_counts", dry.Counts, "deleted_counts", realRep.Counts, "duration", dur)
+	return nil
+}
+
+// EvaluateXIngestStale returns whether the X (push) source is stale (> threshold
+// since last item, or > threshold since installation/source creation when no
+// items have been pushed yet) together with the relevant reference timestamp.
+func EvaluateXIngestStale(st XIngestState, now time.Time, threshold time.Duration) (stale bool, ref *time.Time) {
+	if st.HasSource && !st.HasEnabledSource {
+		return false, nil
+	}
+	if st.LastIngestAt != nil {
+		if now.Sub(*st.LastIngestAt) > threshold {
+			t := *st.LastIngestAt
+			return true, &t
+		}
+		return false, st.LastIngestAt
+	}
+	var anchor *time.Time
+	if st.InstalledAt != nil {
+		t := *st.InstalledAt
+		anchor = &t
+	}
+	if st.HasEnabledSource && st.SourceCreatedAt != nil {
+		if anchor == nil || st.SourceCreatedAt.After(*anchor) {
+			t := *st.SourceCreatedAt
+			anchor = &t
+		}
+	}
+	if anchor != nil && now.Sub(*anchor) > threshold {
+		return true, anchor
+	}
+	return false, anchor
+}
+
+// CheckHealth checks for scheduled jobs overdue by more than OverdueThreshold
+// (3h) and for stale X (push) ingestion (> 36h), guarded by an advisory lock.
+func (s *Service) CheckHealth(ctx context.Context) error {
+	if s.Alerter == nil {
+		return nil
+	}
+	loc, err := s.location()
+	if err != nil {
+		return err
+	}
+	unlock, acquired, err := s.Store.TryLock(ctx, MonitorLockID)
+	if err != nil {
+		return fmt.Errorf("monitor advisory lock: %w", err)
+	}
+	if !acquired {
+		return nil
+	}
+	defer unlock()
+
+	now := s.now()
+	overdue := s.overdueThreshold()
+	checks := []struct {
+		enabled bool
+		job     string
+		slots   []TimeOfDay
+	}{
+		{s.Cleaner != nil, JobCleanup, s.cleanupSlots()},
+		{s.Collector != nil, JobCollect, s.collectSlots()},
+	}
+	for _, c := range checks {
+		if !c.enabled {
+			continue
+		}
+		slot := LatestSlot(now, loc, c.slots)
+		if slot.IsZero() {
+			continue
+		}
+		st, err := s.Store.EnsureJob(ctx, c.job, now)
+		if err != nil {
+			return fmt.Errorf("monitor load %s state: %w", c.job, err)
+		}
+		if !slot.After(st.InstalledAt) {
+			continue
+		}
+		if st.LastSlotAt != nil && !st.LastSlotAt.Before(slot) {
+			continue
+		}
+		if now.Sub(slot) > overdue {
+			s.Alerter.JobMissed(ctx, c.job, slot, now, false)
+		}
+	}
+
+	if s.XIngest != nil {
+		xst, err := s.XIngest.XIngestStatus(ctx)
+		if err != nil {
+			return fmt.Errorf("monitor x ingest: %w", err)
+		}
+		if stale, ref := EvaluateXIngestStale(xst, now, s.xIngestStaleAfter()); stale {
+			s.Alerter.XIngestStale(ctx, xst.LastIngestAt, ref, now)
+		}
+	}
 	return nil
 }

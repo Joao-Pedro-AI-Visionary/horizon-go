@@ -491,3 +491,336 @@ func TestRunLoopFiresScheduledEventAndStopsCleanly(t *testing.T) {
 		t.Fatalf("last_slot_at=%v, want %v", got, wantSlot)
 	}
 }
+
+type recordedAlert struct {
+	kind       string
+	job        string
+	slot       time.Time
+	at         time.Time
+	err        error
+	viaCatchUp bool
+	dec        retention.DeleteDecision
+	lastIngest *time.Time
+	anchor     *time.Time
+}
+
+type recordingAlerter struct {
+	mu     sync.Mutex
+	events []recordedAlert
+}
+
+func (a *recordingAlerter) record(ev recordedAlert) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.events = append(a.events, ev)
+}
+
+func (a *recordingAlerter) JobFailed(_ context.Context, job string, slot, at time.Time, err error) {
+	a.record(recordedAlert{kind: "job_failed", job: job, slot: slot, at: at, err: err})
+}
+func (a *recordingAlerter) JobRecovered(_ context.Context, job string, slot, at time.Time) {
+	a.record(recordedAlert{kind: "job_recovered", job: job, slot: slot, at: at})
+}
+func (a *recordingAlerter) JobMissed(_ context.Context, job string, slot, at time.Time, viaCatchUp bool) {
+	a.record(recordedAlert{kind: "job_missed", job: job, slot: slot, at: at, viaCatchUp: viaCatchUp})
+}
+func (a *recordingAlerter) CleanupBlocked(_ context.Context, slot, at time.Time, dec retention.DeleteDecision) {
+	a.record(recordedAlert{kind: "cleanup_blocked", job: JobCleanup, slot: slot, at: at, dec: dec})
+}
+func (a *recordingAlerter) XIngestStale(_ context.Context, lastIngestAt, anchorAt *time.Time, at time.Time) {
+	a.record(recordedAlert{kind: "x_ingest_stale", at: at, lastIngest: lastIngestAt, anchor: anchorAt})
+}
+
+type fakeXIngestStore struct {
+	state XIngestState
+	err   error
+}
+
+func (f *fakeXIngestStore) XIngestStatus(context.Context) (XIngestState, error) {
+	return f.state, f.err
+}
+
+func TestSchedulerAlertsJobFailedAndRecovered(t *testing.T) {
+	loc := mustLoc(t)
+	installed := time.Date(2026, 11, 13, 0, 0, 0, 0, loc)
+	now := time.Date(2026, 11, 14, 7, 30, 30, 0, loc)
+	st := newMemStore()
+	st.jobs[JobCollect] = JobState{JobName: JobCollect, InstalledAt: installed}
+	st.jobs[JobCleanup] = JobState{JobName: JobCleanup, InstalledAt: installed}
+
+	al := &recordingAlerter{}
+	col := &fakeCollector{err: errors.New("db timeout")}
+	cln := &fakeCleaner{dryErr: errors.New("dry_run failed")}
+	svc := &Service{
+		Store:     st,
+		Collector: col,
+		Cleaner:   cln,
+		Alerter:   al,
+		Now:       func() time.Time { return now },
+		Log:       slog.New(slog.DiscardHandler),
+	}
+
+	// 1. Cleanup dry-run fails & collect fails (both on time) -> 2 job_failed alerts.
+	now = time.Date(2026, 11, 14, 1, 0, 10, 0, loc)
+	if err := svc.runCleanupSlot(context.Background(), time.Date(2026, 11, 14, 1, 0, 0, 0, loc), TriggerSchedule); err == nil {
+		t.Fatal("want cleanup error")
+	}
+	now = time.Date(2026, 11, 14, 7, 30, 10, 0, loc)
+	if err := svc.runCollectSlot(context.Background(), time.Date(2026, 11, 14, 7, 30, 0, 0, loc), TriggerSchedule); err == nil {
+		t.Fatal("want collect error")
+	}
+	if len(al.events) != 2 || al.events[0].kind != "job_failed" || al.events[0].job != JobCleanup || al.events[1].kind != "job_failed" || al.events[1].job != JobCollect {
+		t.Fatalf("unexpected alerts after failures: %+v", al.events)
+	}
+
+	// 2. Next run: collect succeeds, cleanup skipped (0 candidates) -> 2 job_recovered alerts.
+	al.events = nil
+	col.err = nil
+	cln.dryErr = nil
+	cln.dry = retention.Report{Counts: retention.Counts{"items_total": 100, "feed_view": 50, "items": 0}}
+	now = time.Date(2026, 11, 14, 16, 30, 10, 0, loc)
+	if err := svc.runCollectSlot(context.Background(), time.Date(2026, 11, 14, 16, 30, 0, 0, loc), TriggerSchedule); err != nil {
+		t.Fatalf("collect recovery: %v", err)
+	}
+	now = time.Date(2026, 11, 15, 1, 0, 10, 0, loc)
+	if err := svc.runCleanupSlot(context.Background(), time.Date(2026, 11, 15, 1, 0, 0, 0, loc), TriggerSchedule); err != nil {
+		t.Fatalf("cleanup skipped recovery: %v", err)
+	}
+	if len(al.events) != 2 || al.events[0].kind != "job_recovered" || al.events[0].job != JobCollect || al.events[1].kind != "job_recovered" || al.events[1].job != JobCleanup {
+		t.Fatalf("expected 2 job_recovered alerts, got %+v", al.events)
+	}
+
+	// 3. Repeated success must NOT emit another job_recovered.
+	al.events = nil
+	now = time.Date(2026, 11, 15, 7, 30, 10, 0, loc)
+	if err := svc.runCollectSlot(context.Background(), time.Date(2026, 11, 15, 7, 30, 0, 0, loc), TriggerSchedule); err != nil {
+		t.Fatal(err)
+	}
+	if len(al.events) != 0 {
+		t.Fatalf("unexpected alert on repeated success: %+v", al.events)
+	}
+
+	// 4. Cleanup real-delete fails then recovers -> job_failed then job_recovered.
+	al.events = nil
+	cln.dry = retention.Report{Counts: retention.Counts{"items_total": 200, "feed_view": 10, "items": 10}}
+	cln.realErr = errors.New("deadlock detected")
+	now = time.Date(2026, 11, 16, 1, 0, 10, 0, loc)
+	if err := svc.runCleanupSlot(context.Background(), time.Date(2026, 11, 16, 1, 0, 0, 0, loc), TriggerSchedule); err == nil {
+		t.Fatal("want delete error")
+	}
+	if len(al.events) != 1 || al.events[0].kind != "job_failed" || al.events[0].job != JobCleanup {
+		t.Fatalf("expected cleanup job_failed on delete err, got %+v", al.events)
+	}
+	al.events = nil
+	cln.realErr = nil
+	now = time.Date(2026, 11, 17, 1, 0, 10, 0, loc)
+	if err := svc.runCleanupSlot(context.Background(), time.Date(2026, 11, 17, 1, 0, 0, 0, loc), TriggerSchedule); err != nil {
+		t.Fatal(err)
+	}
+	if len(al.events) != 1 || al.events[0].kind != "job_recovered" || al.events[0].job != JobCleanup {
+		t.Fatalf("expected cleanup job_recovered after real delete, got %+v", al.events)
+	}
+}
+
+func TestSchedulerAlertsCleanupBlockedGuard(t *testing.T) {
+	loc := mustLoc(t)
+	installed := time.Date(2026, 11, 13, 0, 0, 0, 0, loc)
+	slot1 := time.Date(2026, 11, 14, 1, 0, 0, 0, loc)
+	slot2 := time.Date(2026, 11, 15, 1, 0, 0, 0, loc)
+
+	st := newMemStore()
+	st.jobs[JobCleanup] = JobState{JobName: JobCleanup, InstalledAt: installed}
+	al := &recordingAlerter{}
+	cln := &fakeCleaner{dry: retention.Report{Counts: retention.Counts{"items_total": 100, "feed_view": 40, "items": 85}}}
+
+	now := slot1.Add(time.Minute)
+	svc := &Service{Store: st, Cleaner: cln, Alerter: al, Now: func() time.Time { return now }, Log: slog.New(slog.DiscardHandler)}
+	if err := svc.runCleanupSlot(context.Background(), slot1, TriggerSchedule); err != nil {
+		t.Fatal(err)
+	}
+	if len(al.events) != 1 || al.events[0].kind != "cleanup_blocked" {
+		t.Fatalf("expected cleanup_blocked alert, got %+v", al.events)
+	}
+	dec := al.events[0].dec
+	if dec.Reason != "candidates_gt_80pct" || dec.Items != 85 || dec.Total != 100 || dec.Feed != 40 {
+		t.Fatalf("unexpected blocked decision: %+v", dec)
+	}
+
+	// No-op (Items == 0) is normal skipped state, NOT cleanup_blocked.
+	al.events = nil
+	cln.dry = retention.Report{Counts: retention.Counts{"items_total": 100, "feed_view": 0, "items": 0}}
+	now = slot2.Add(time.Minute)
+	if err := svc.runCleanupSlot(context.Background(), slot2, TriggerSchedule); err != nil {
+		t.Fatal(err)
+	}
+	if len(al.events) != 0 {
+		t.Fatalf("no_candidates should not raise cleanup_blocked: %+v", al.events)
+	}
+}
+
+func TestSchedulerAlertsJobMissedCatchUpAndOverdue(t *testing.T) {
+	loc := mustLoc(t)
+	installed := time.Date(2026, 11, 14, 7, 0, 0, 0, loc)
+	slot0730 := time.Date(2026, 11, 14, 7, 30, 0, 0, loc)
+
+	// 1. Pre-install slot during first-boot collect catch-up must NOT alert job_missed.
+	st := newMemStore()
+	firstBootAt := time.Date(2026, 11, 14, 13, 10, 0, 0, loc)
+	st.jobs[JobCollect] = JobState{JobName: JobCollect, InstalledAt: firstBootAt}
+	al := &recordingAlerter{}
+	svc := &Service{
+		Store:     st,
+		Collector: &fakeCollector{},
+		Alerter:   al,
+		Now:       func() time.Time { return firstBootAt },
+		Log:       slog.New(slog.DiscardHandler),
+	}
+	if err := svc.runCollectSlot(context.Background(), slot0730, TriggerBootCatchup); err != nil {
+		t.Fatal(err)
+	}
+	if len(al.events) != 0 {
+		t.Fatalf("pre-install slot should not emit job_missed: %+v", al.events)
+	}
+
+	// 2. Within 3-minute catch-up grace must NOT alert job_missed.
+	st2 := newMemStore()
+	st2.jobs[JobCollect] = JobState{JobName: JobCollect, InstalledAt: installed}
+	al2 := &recordingAlerter{}
+	svc2 := &Service{
+		Store:     st2,
+		Collector: &fakeCollector{},
+		Alerter:   al2,
+		Now:       func() time.Time { return slot0730.Add(2 * time.Minute) },
+		Log:       slog.New(slog.DiscardHandler),
+	}
+	if err := svc2.runCollectSlot(context.Background(), slot0730, TriggerBootCatchup); err != nil {
+		t.Fatal(err)
+	}
+	if len(al2.events) != 0 {
+		t.Fatalf("within grace should not emit job_missed: %+v", al2.events)
+	}
+
+	// 3. Catch-up beyond 3m grace emits job_missed with viaCatchUp=true.
+	st3 := newMemStore()
+	st3.jobs[JobCollect] = JobState{JobName: JobCollect, InstalledAt: installed}
+	al3 := &recordingAlerter{}
+	svc3 := &Service{
+		Store:     st3,
+		Collector: &fakeCollector{},
+		Alerter:   al3,
+		Now:       func() time.Time { return slot0730.Add(20 * time.Minute) },
+		Log:       slog.New(slog.DiscardHandler),
+	}
+	if err := svc3.runCollectSlot(context.Background(), slot0730, TriggerBootCatchup); err != nil {
+		t.Fatal(err)
+	}
+	if len(al3.events) != 1 || al3.events[0].kind != "job_missed" || !al3.events[0].viaCatchUp || !al3.events[0].slot.Equal(slot0730) {
+		t.Fatalf("expected catch-up job_missed, got %+v", al3.events)
+	}
+
+	// 4. CheckHealth raises job_missed (viaCatchUp=false) when slot > installed_at and overdue > 3h.
+	st4 := newMemStore()
+	st4.jobs[JobCollect] = JobState{JobName: JobCollect, InstalledAt: installed}
+	al4 := &recordingAlerter{}
+	svc4 := &Service{
+		Store:     st4,
+		Collector: &fakeCollector{},
+		Alerter:   al4,
+		Now:       func() time.Time { return slot0730.Add(3*time.Hour + time.Minute) },
+		Log:       slog.New(slog.DiscardHandler),
+	}
+	if err := svc4.CheckHealth(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(al4.events) != 1 || al4.events[0].kind != "job_missed" || al4.events[0].viaCatchUp {
+		t.Fatalf("expected overdue job_missed, got %+v", al4.events)
+	}
+
+	// 5. Completed slot does NOT raise CheckHealth job_missed.
+	al4.events = nil
+	st4.jobs[JobCollect] = JobState{JobName: JobCollect, InstalledAt: installed, LastSlotAt: &slot0730}
+	if err := svc4.CheckHealth(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(al4.events) != 0 {
+		t.Fatalf("completed slot should not trigger overdue job_missed: %+v", al4.events)
+	}
+}
+
+func TestEvaluateXIngestStaleAndCheckHealth(t *testing.T) {
+	now := time.Date(2026, 11, 14, 15, 0, 0, 0, time.UTC)
+	ptr := func(d time.Duration) *time.Time {
+		t := now.Add(d)
+		return &t
+	}
+
+	cases := []struct {
+		name      string
+		state     XIngestState
+		wantStale bool
+		wantRef   *time.Time
+	}{
+		{
+			name:      "disabled push source ignored",
+			state:     XIngestState{HasSource: true, HasEnabledSource: false, LastIngestAt: ptr(-48 * time.Hour)},
+			wantStale: false,
+		},
+		{
+			name:      "recent push ingest under 36h",
+			state:     XIngestState{HasSource: true, HasEnabledSource: true, LastIngestAt: ptr(-35 * time.Hour)},
+			wantStale: false,
+			wantRef:   ptr(-35 * time.Hour),
+		},
+		{
+			name:      "stale push ingest over 36h",
+			state:     XIngestState{HasSource: true, HasEnabledSource: true, LastIngestAt: ptr(-37 * time.Hour)},
+			wantStale: true,
+			wantRef:   ptr(-37 * time.Hour),
+		},
+		{
+			name:      "first day without ingest under 36h grace",
+			state:     XIngestState{HasSource: true, HasEnabledSource: true, InstalledAt: ptr(-40 * time.Hour), SourceCreatedAt: ptr(-12 * time.Hour)},
+			wantStale: false,
+			wantRef:   ptr(-12 * time.Hour),
+		},
+		{
+			name:      "no ingest past 36h after install and source creation",
+			state:     XIngestState{HasSource: true, HasEnabledSource: true, InstalledAt: ptr(-50 * time.Hour), SourceCreatedAt: ptr(-37 * time.Hour)},
+			wantStale: true,
+			wantRef:   ptr(-37 * time.Hour),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stale, ref := EvaluateXIngestStale(tc.state, now, DefaultXIngestStaleAfter)
+			if stale != tc.wantStale {
+				t.Fatalf("stale=%v, want %v", stale, tc.wantStale)
+			}
+			if tc.wantRef != nil {
+				if ref == nil || !ref.Equal(*tc.wantRef) {
+					t.Fatalf("ref=%v, want %v", ref, tc.wantRef)
+				}
+			} else if ref != nil {
+				t.Fatalf("ref=%v, want nil", ref)
+			}
+		})
+	}
+
+	// Verify CheckHealth triggers XIngestStale when EvaluateXIngestStale is true.
+	al := &recordingAlerter{}
+	last := now.Add(-37 * time.Hour)
+	svc := &Service{
+		Store:   newMemStore(),
+		Alerter: al,
+		XIngest: &fakeXIngestStore{state: XIngestState{HasSource: true, HasEnabledSource: true, LastIngestAt: &last}},
+		Now:     func() time.Time { return now },
+		Log:     slog.New(slog.DiscardHandler),
+	}
+	if err := svc.CheckHealth(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(al.events) != 1 || al.events[0].kind != "x_ingest_stale" || al.events[0].lastIngest == nil || !al.events[0].lastIngest.Equal(last) {
+		t.Fatalf("expected CheckHealth x_ingest_stale alert, got %+v", al.events)
+	}
+}

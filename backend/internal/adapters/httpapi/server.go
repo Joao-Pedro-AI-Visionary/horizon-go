@@ -22,6 +22,7 @@ import (
 	"github.com/jpdev/horizon-go/internal/app"
 	"github.com/jpdev/horizon-go/internal/domain"
 	"github.com/jpdev/horizon-go/internal/ingest"
+	"github.com/jpdev/horizon-go/internal/opsalerts"
 	"github.com/jpdev/horizon-go/internal/ports"
 	"github.com/jpdev/horizon-go/internal/retention"
 )
@@ -61,6 +62,11 @@ type AlertStore interface {
 	Alerts(ctx context.Context, since, now time.Time, stale time.Duration) ([]domain.Alert, error)
 }
 
+// AlertTester dispatches one test operational alert (POST /api/admin/alerts/test).
+type AlertTester interface {
+	SendTest(ctx context.Context) opsalerts.NotifyResult
+}
+
 // CleanupRunner executes the protected 32-day retention operation.
 type CleanupRunner interface {
 	Cleanup(ctx context.Context, dryRun bool) (retention.Report, error)
@@ -82,6 +88,8 @@ type Server struct {
 	Pusher Pusher
 	// Alerts, when set, enables GET /api/admin/alerts (admin only).
 	Alerts AlertStore
+	// AlertTester, when set, enables POST /api/admin/alerts/test (admin only).
+	AlertTester AlertTester
 	// Cleanup, when set, enables POST /api/pipeline/cleanup (admin only).
 	Cleanup CleanupRunner
 	// AlertStale raises an alert when no fetch succeeded for this long
@@ -175,6 +183,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/pipeline/cleanup", s.cleanupPipeline)
 		r.Post("/items/ingest", s.ingestItems)
 		r.Get("/admin/alerts", s.adminAlerts)
+		r.Post("/admin/alerts/test", s.adminAlertTest)
 	})
 	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
