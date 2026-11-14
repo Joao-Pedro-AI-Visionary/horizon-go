@@ -12,6 +12,34 @@ import (
 	"github.com/jpdev/horizon-go/internal/domain"
 )
 
+func validHost(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" || len(host) > 253 {
+		return ""
+	}
+	for _, r := range host {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-' || r == ':' {
+			continue
+		}
+		return ""
+	}
+	return host
+}
+
+func safeHTTPURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return ""
+	}
+	if u.Host == "" {
+		return ""
+	}
+	return u.String()
+}
+
 func (s *Server) publicSiteBase(r *http.Request) string {
 	if b := strings.TrimRight(strings.TrimSpace(s.FrontURL), "/"); b != "" {
 		return b
@@ -20,8 +48,8 @@ func (s *Server) publicSiteBase(r *http.Request) string {
 	if isHTTPS(r) {
 		scheme = "https"
 	}
-	if r.Host != "" {
-		return scheme + "://" + r.Host
+	if h := validHost(r.Host); h != "" {
+		return scheme + "://" + h
 	}
 	return "https://horizon-web-eight.vercel.app"
 }
@@ -31,8 +59,8 @@ func (s *Server) apiBase(r *http.Request) string {
 	if isHTTPS(r) {
 		scheme = "https"
 	}
-	if r.Host != "" {
-		return scheme + "://" + r.Host
+	if h := validHost(r.Host); h != "" {
+		return scheme + "://" + h
 	}
 	return s.publicSiteBase(r)
 }
@@ -222,7 +250,7 @@ func (s *Server) sitemapXML(w http.ResponseWriter, r *http.Request) {
 	}
 	if ds, err := s.Store.ListDigests(r.Context(), 30); err == nil {
 		for _, d := range ds {
-			urls = append(urls, sitemapURL{Loc: fmt.Sprintf("%s/digests/%s", site, d.Date), LastMod: d.Date})
+			urls = append(urls, sitemapURL{Loc: fmt.Sprintf("%s/digests/%s", site, url.PathEscape(d.Date)), LastMod: d.Date})
 		}
 	}
 	writeXML(w, "application/xml; charset=utf-8", sitemapURLSet{
@@ -269,6 +297,10 @@ func (s *Server) itemPublicHTML(w http.ResponseWriter, r *http.Request) {
 	if it.Score != nil {
 		scoreText = fmt.Sprintf(" · Nota %.1f/10", *it.Score)
 	}
+	linkHTML := ""
+	if safeOrig := safeHTTPURL(it.URL); safeOrig != "" {
+		linkHTML = fmt.Sprintf(` · <a href="%s" rel="noopener noreferrer" style="color:#415045;">Ler original</a>`, html.EscapeString(safeOrig))
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=300, stale-while-revalidate=600")
 	w.WriteHeader(http.StatusOK)
@@ -298,7 +330,7 @@ func (s *Server) itemPublicHTML(w http.ResponseWriter, r *http.Request) {
     <p style="font-size:13px;font-weight:700;color:#276b43;margin:0 0 8px;">Radar by JpDev%[6]s</p>
     <h1 style="font-size:28px;line-height:1.2;margin:0 0 12px;">%[4]s</h1>
     <p style="font-size:16px;line-height:1.6;color:#415045;margin:0 0 20px;">%[2]s</p>
-    <p style="margin:0;"><a href="%[3]s" style="color:#276b43;font-weight:700;">Abrir no Radar</a> · <a href="%[7]s" rel="noopener noreferrer" style="color:#415045;">Ler original</a></p>
+    <p style="margin:0;"><a href="%[3]s" style="color:#276b43;font-weight:700;">Abrir no Radar</a>%[7]s</p>
   </main>
 </body>
 </html>`,
@@ -308,6 +340,6 @@ func (s *Server) itemPublicHTML(w http.ResponseWriter, r *http.Request) {
 		html.EscapeString(it.Title),
 		html.EscapeString(ogImg),
 		html.EscapeString(scoreText),
-		html.EscapeString(it.URL),
+		linkHTML,
 	)
 }

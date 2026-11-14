@@ -156,6 +156,17 @@ func wrapLines(face font.Face, s string, maxWidthPx, maxLines int) []string {
 		}
 		return font.MeasureString(face, line).Ceil()
 	}
+	truncateToWidth := func(text string) string {
+		text = strings.TrimSpace(text)
+		if measure(text) <= maxWidthPx {
+			return text
+		}
+		rs := []rune(text)
+		for len(rs) > 4 && measure(string(rs)+"…") > maxWidthPx {
+			rs = rs[:len(rs)-1]
+		}
+		return strings.TrimSpace(string(rs)) + "…"
+	}
 	var lines []string
 	cur := words[0]
 	for idx, w := range words[1:] {
@@ -164,27 +175,16 @@ func wrapLines(face font.Face, s string, maxWidthPx, maxLines int) []string {
 			cur = cand
 			continue
 		}
-		lines = append(lines, cur)
+		lines = append(lines, truncateToWidth(cur))
 		if len(lines) == maxLines-1 {
 			rest := strings.Join(words[idx+1:], " ")
-			for measure(rest+"…") > maxWidthPx && len([]rune(rest)) > 4 {
-				rs := []rune(rest)
-				rest = string(rs[:len(rs)-1])
-			}
-			if measure(rest) > maxWidthPx {
-				rest = strings.TrimSpace(rest) + "…"
-			}
-			lines = append(lines, strings.TrimSpace(rest))
+			lines = append(lines, truncateToWidth(rest))
 			return lines
 		}
 		cur = w
 	}
 	if cur != "" && len(lines) < maxLines {
-		for measure(cur+"…") > maxWidthPx && len([]rune(cur)) > 4 {
-			rs := []rune(cur)
-			cur = string(rs[:len(rs)-1]) + "…"
-		}
-		lines = append(lines, cur)
+		lines = append(lines, truncateToWidth(cur))
 	}
 	return lines
 }

@@ -79,4 +79,23 @@ func TestSEOEndpointsRSSSitemapOGImageAndHTML(t *testing.T) {
 	if err != nil || len(pngBytes) < 1000 {
 		t.Fatalf("render long item og failed: err=%v len=%d", err, len(pngBytes))
 	}
+
+	// Regression: single unbroken token exceeding max width must terminate and add ellipsis.
+	unbroken := "https://example.com/" + strings.Repeat("superlongsegment", 20)
+	wrapped := wrapLines(nil, unbroken, 900, 3)
+	if len(wrapped) != 1 || !strings.HasSuffix(wrapped[0], "…") {
+		t.Fatalf("expected truncated unbroken token with ellipsis, got %#v", wrapped)
+	}
+	multi := wrapLines(nil, "word1 word2 word3 "+unbroken, 200, 2)
+	if len(multi) != 2 || !strings.HasSuffix(multi[1], "…") {
+		t.Fatalf("expected multi-line truncation with ellipsis, got %#v", multi)
+	}
+	if _, err := RenderItemOG(domain.ItemDetail{
+		ID:      99,
+		Title:   unbroken,
+		Summary: unbroken,
+		Score:   &sc,
+	}); err != nil {
+		t.Fatalf("RenderItemOG on unbroken long token failed: %v", err)
+	}
 }
