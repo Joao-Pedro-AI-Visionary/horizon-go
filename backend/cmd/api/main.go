@@ -141,6 +141,21 @@ func loginFromEnv(lookup func(string) string, log *slog.Logger) (*httpapi.Login,
 	}, nil
 }
 
+// voteHashSecret returns the HMAC key for hashing voter device IDs and IPs.
+func voteHashSecret(lookup func(string) string, log *slog.Logger) ([]byte, error) {
+	for _, k := range []string{"VOTE_HASH_SECRET", "SESSION_SECRET", "HORIZON_ADMIN_TOKEN"} {
+		if v := strings.TrimSpace(lookup(k)); v != "" {
+			return []byte(v), nil
+		}
+	}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return nil, err
+	}
+	log.Warn("VOTE_HASH_SECRET unset: using ephemeral key for anonymous votes")
+	return buf, nil
+}
+
 // mailerFromEnv returns the configured Resend client and admin recipient
 // (RESET_EMAIL_TO) when RESEND_API_KEY and RESET_EMAIL_TO are set, using
 // RESET_FROM (default "Horizon <onboarding@resend.dev>").
@@ -248,15 +263,22 @@ func run(ctx context.Context, log *slog.Logger) error {
 		}
 	}
 	reset := resetFromEnv(os.Getenv)
+	voteSecret, err := voteHashSecret(os.Getenv, log)
+	if err != nil {
+		return err
+	}
 	timeout := envDuration("SOURCE_TIMEOUT", app.DefaultSourceTimeout)
 	read := postgres.ReadRepo{DB: pool}
 	sources := postgres.SourceRepo{DB: pool}
+	votes := postgres.VoteRepo{DB: pool}
 	schedRepo := postgres.SchedulerRepo{DB: pool}
 	opsAlerts := opsAlertsFromEnv(os.Getenv, read, log)
 	collector := &app.Collector{Publisher: bus, Runs: postgres.FetchRunRepo{DB: pool}, Timeout: timeout, Log: log}
 	srv := &httpapi.Server{
 		Store:       read,
 		Sources:     sources,
+		Votes:       votes,
+		VoteHashSecret: voteSecret,
 		Cleanup:     &retention.Service{Store: postgres.CleanupRepo{DB: pool}},
 		Digests:     &digest.Service{Store: read, Failures: read},
 		Alerts:      read,

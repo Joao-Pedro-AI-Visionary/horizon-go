@@ -18,12 +18,22 @@ type ReadRepo struct{ DB *pgxpool.Pool }
 // Ping checks the connection.
 func (r ReadRepo) Ping(ctx context.Context) error { return r.DB.Ping(ctx) }
 
-const feedCols = `item_id, source_id, source_kind, source_name, title, url, summary, score_reason, score, tags, published_at, cluster_id, duplicate_count, projected_at`
+const feedCols = `item_id, source_id, source_kind, source_name, title, url, summary, score_reason, score, tags, published_at, cluster_id, duplicate_count, projected_at, likes_count`
+
+func scanFeedWithVote(row pgx.CollectableRow) (domain.FeedItem, error) {
+	var f domain.FeedItem
+	err := row.Scan(&f.ItemID, &f.SourceID, &f.SourceKind, &f.SourceName, &f.Title, &f.URL, &f.Summary, &f.ScoreReason,
+		&f.Score, &f.Tags, &f.PublishedAt, &f.ClusterID, &f.DuplicateCount, &f.ProjectedAt, &f.Likes, &f.UserVote)
+	if f.Tags == nil {
+		f.Tags = []string{}
+	}
+	return f, err
+}
 
 func scanFeed(row pgx.CollectableRow) (domain.FeedItem, error) {
 	var f domain.FeedItem
 	err := row.Scan(&f.ItemID, &f.SourceID, &f.SourceKind, &f.SourceName, &f.Title, &f.URL, &f.Summary, &f.ScoreReason,
-		&f.Score, &f.Tags, &f.PublishedAt, &f.ClusterID, &f.DuplicateCount, &f.ProjectedAt)
+		&f.Score, &f.Tags, &f.PublishedAt, &f.ClusterID, &f.DuplicateCount, &f.ProjectedAt, &f.Likes)
 	if f.Tags == nil {
 		f.Tags = []string{}
 	}
@@ -64,28 +74,51 @@ func feedFilter(q domain.FeedQuery, withTime bool) ([]string, []any) {
 	return where, args
 }
 
-// Feed pages through the feed_view projection (the only table it reads).
+// Feed pages through the feed_view projection (the only table it reads for items,
+// plus optional caller vote lookup when DeviceHash is set).
 func (r ReadRepo) Feed(ctx context.Context, q domain.FeedQuery) (domain.FeedPage, error) {
 	where, args := feedFilter(q, true)
+	now := time.Now().UTC()
+	if q.Sort == domain.SortTrending {
+		args = append(args, now.Add(-domain.TrendingWindow))
+		where = append(where, fmt.Sprintf("COALESCE(published_at, projected_at) >= $%d", len(args)))
+	}
 	cond := ""
 	if len(where) > 0 {
 		cond = " WHERE " + strings.Join(where, " AND ")
-	}
-	order := "score DESC, COALESCE(published_at, projected_at) DESC, item_id DESC"
-	if q.Sort == domain.SortRecent {
-		order = "COALESCE(published_at, projected_at) DESC, score DESC, item_id DESC"
 	}
 	page := domain.FeedPage{Page: q.Page, PageSize: q.PageSize, Items: []domain.FeedItem{}}
 	if err := r.DB.QueryRow(ctx, `SELECT count(*) FROM feed_view`+cond, args...).Scan(&page.Total); err != nil {
 		return page, err
 	}
+	var order string
+	switch q.Sort {
+	case domain.SortRecent:
+		order = "COALESCE(published_at, projected_at) DESC, score DESC, item_id DESC"
+	case domain.SortTrending:
+		args = append(args, now, domain.TrendingGravity)
+		nowArg := len(args) - 1
+		gravArg := len(args)
+		order = fmt.Sprintf(
+			`((GREATEST(score, 0)::double precision + GREATEST(-1.5, LEAST(2.5, (likes_count - dislikes_count)::double precision * 0.25))) / POWER(GREATEST(EXTRACT(EPOCH FROM ($%d::timestamptz - COALESCE(published_at, projected_at))) / 3600.0, 0.0) + 2.0, $%d::double precision)) DESC, score DESC, COALESCE(published_at, projected_at) DESC, item_id DESC`,
+			nowArg, gravArg,
+		)
+	default:
+		// AI score stays the base; net votes only adjust ordering slightly (+/- 0.5).
+		order = "score + GREATEST(-0.5, LEAST(0.5, (likes_count - dislikes_count)::double precision * 0.05)) DESC, score DESC, COALESCE(published_at, projected_at) DESC, item_id DESC"
+	}
+	userVoteExpr := "0::int"
+	if q.DeviceHash != "" {
+		args = append(args, q.DeviceHash)
+		userVoteExpr = fmt.Sprintf("COALESCE((SELECT v.vote::int FROM item_votes v WHERE v.item_id = feed_view.item_id AND v.device_hash = $%d), 0)", len(args))
+	}
 	args = append(args, q.PageSize, (q.Page-1)*q.PageSize)
-	rows, err := r.DB.Query(ctx, fmt.Sprintf(`SELECT %s FROM feed_view%s ORDER BY %s LIMIT $%d OFFSET $%d`,
-		feedCols, cond, order, len(args)-1, len(args)), args...)
+	rows, err := r.DB.Query(ctx, fmt.Sprintf(`SELECT %s, %s FROM feed_view%s ORDER BY %s LIMIT $%d OFFSET $%d`,
+		feedCols, userVoteExpr, cond, order, len(args)-1, len(args)), args...)
 	if err != nil {
 		return page, err
 	}
-	items, err := pgx.CollectRows(rows, scanFeed)
+	items, err := pgx.CollectRows(rows, scanFeedWithVote)
 	if err != nil {
 		return page, err
 	}
@@ -161,11 +194,12 @@ func (r ReadRepo) Item(ctx context.Context, id int64) (domain.ItemDetail, error)
 	err := r.DB.QueryRow(ctx, `
 SELECT i.id, i.source_id, s.kind, s.name, i.title, i.url, i.author, i.content, i.status, i.score,
        COALESCE(i.score_reason, ''), COALESCE(i.summary, ''), i.tags, i.published_at, i.fetched_at, i.scored_at, i.last_error,
-       i.cluster_id, c.title, c.item_count, c.representative_item_id
+       i.cluster_id, c.title, c.item_count, c.representative_item_id,
+       COALESCE((SELECT count(*)::int FROM item_votes v WHERE v.item_id = i.id AND v.vote = 1), 0)
 FROM items i JOIN sources s ON s.id = i.source_id LEFT JOIN clusters c ON c.id = i.cluster_id
 WHERE i.id = $1`, id).Scan(&d.ID, &d.SourceID, &d.SourceKind, &d.SourceName, &d.Title, &d.URL, &d.Author, &d.Content,
 		&d.Status, &d.Score, &d.ScoreReason, &d.Summary, &d.Tags, &d.PublishedAt, &d.FetchedAt, &d.ScoredAt, &d.LastError,
-		&clusterID, &clusterTitle, &clusterCount, &repID)
+		&clusterID, &clusterTitle, &clusterCount, &repID, &d.Likes)
 	if err != nil {
 		return d, mapErr(err)
 	}

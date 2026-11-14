@@ -88,9 +88,9 @@ func parseFeedQuery(v url.Values, now time.Time) (domain.FeedQuery, error) {
 	switch q.Sort {
 	case "":
 		q.Sort = domain.SortScore
-	case domain.SortScore, domain.SortRecent:
+	case domain.SortScore, domain.SortRecent, domain.SortTrending:
 	default:
-		return q, domain.Invalidf("sort must be score or recent")
+		return q, domain.Invalidf("sort must be score, recent or trending")
 	}
 	if p := strings.TrimSpace(v.Get("period")); p != "" && p != "all" {
 		d, ok := periods[p]
@@ -129,6 +129,7 @@ func (s *Server) feed(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	q.DeviceHash = s.deviceHashFromReq(r)
 	page, err := s.Store.Feed(r.Context(), q)
 	if err != nil {
 		s.fail(w, r, err)
@@ -181,6 +182,13 @@ func (s *Server) item(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.fail(w, r, err)
 		return
+	}
+	if s.Votes != nil {
+		if dh := s.deviceHashFromReq(r); dh != "" {
+			if uv, err := s.Votes.UserVote(r.Context(), id, dh); err == nil {
+				it.UserVote = uv
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, it)
 }

@@ -23,6 +23,8 @@ type FeedItem struct {
 	ClusterID      *int64     `json:"cluster_id"`
 	DuplicateCount int        `json:"duplicate_count"`
 	ProjectedAt    time.Time  `json:"projected_at"`
+	Likes          int        `json:"likes"`
+	UserVote       int        `json:"user_vote"`
 }
 
 // EventTime is published_at, or projected_at when the source gave no date.
@@ -33,10 +35,13 @@ func (f FeedItem) EventTime() time.Time {
 	return f.ProjectedAt
 }
 
-// Feed sort orders.
+// Feed sort orders and trending parameters.
 const (
-	SortScore  = "score"
-	SortRecent = "recent"
+	SortScore       = "score"
+	SortRecent      = "recent"
+	SortTrending    = "trending"
+	TrendingWindow  = 72 * time.Hour
+	TrendingGravity = 1.5
 )
 
 // Feed paging bounds.
@@ -56,6 +61,14 @@ type FeedQuery struct {
 	Sort       string
 	Page       int
 	PageSize   int
+	DeviceHash string
+}
+
+// VoteResult is returned by POST /api/items/{id}/vote. Dislikes remain hidden.
+type VoteResult struct {
+	ItemID   int64 `json:"item_id"`
+	Likes    int   `json:"likes"`
+	UserVote int   `json:"user_vote"`
 }
 
 // FeedPage is one page of the feed.
@@ -108,6 +121,8 @@ type ItemDetail struct {
 	ScoredAt    *time.Time    `json:"scored_at"`
 	LastError   string        `json:"last_error"`
 	IsPrimary   bool          `json:"is_primary"`
+	Likes       int           `json:"likes"`
+	UserVote    int           `json:"user_vote"`
 	Cluster     *ClusterInfo  `json:"cluster"`
 	Duplicates  []RelatedItem `json:"duplicates"`
 }

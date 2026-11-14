@@ -72,6 +72,13 @@ type CleanupRunner interface {
 	Cleanup(ctx context.Context, dryRun bool) (retention.Report, error)
 }
 
+// VoteStore persists anonymous per-device item votes and short-lived IP rate limits.
+type VoteStore interface {
+	Vote(ctx context.Context, itemID int64, deviceHash string, vote int) (domain.VoteResult, error)
+	CheckAndRecordRate(ctx context.Context, ipHash string, window time.Duration, maxVotes int, ttl time.Duration, now time.Time) (time.Duration, bool, error)
+	UserVote(ctx context.Context, itemID int64, deviceHash string) (int, error)
+}
+
 // Check is a named dependency probe for /healthz.
 type Check struct {
 	Name string
@@ -92,6 +99,13 @@ type Server struct {
 	AlertTester AlertTester
 	// Cleanup, when set, enables POST /api/pipeline/cleanup (admin only).
 	Cleanup CleanupRunner
+	// Votes, when set, enables anonymous per-device voting (POST /api/items/{id}/vote).
+	Votes          VoteStore
+	VoteHashSecret []byte
+	VoteMinDwell   time.Duration
+	VoteRateWindow time.Duration
+	VoteRateMax    int
+	VoteRateTTL    time.Duration
 	// AlertStale raises an alert when no fetch succeeded for this long
 	// (default 14h; negative disables it).
 	AlertStale time.Duration
@@ -168,6 +182,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/feed", s.feed)
 		r.Get("/feed/timeline", s.feedTimeline)
 		r.Get("/items/{id}", s.item)
+		r.Post("/items/{id}/vote", s.voteItem)
 		r.Get("/digests", s.listDigests)
 		r.Post("/digests/generate", s.generateDigest)
 		r.Get("/digests/{date}", s.getDigest)
@@ -219,6 +234,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 		}
 		if ok {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
 		}
 		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 			if !ok {
@@ -226,7 +242,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 				return
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, X-Request-Id")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, X-Request-Id, X-Device-Id")
 			w.Header().Set("Access-Control-Max-Age", "600")
 			w.WriteHeader(http.StatusNoContent)
 			return
