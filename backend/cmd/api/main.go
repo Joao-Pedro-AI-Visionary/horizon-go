@@ -337,6 +337,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		Checks:          []httpapi.Check{{Name: "postgres", Fn: read.Ping}, {Name: "nats", Fn: bus.Ping}},
 		Window:          envDuration("COLLECT_WINDOW", 24*time.Hour),
 		AllowedOrigins:  corsOrigins(os.Getenv),
+		FrontURL:        newsletterSvc.FrontURL,
 		CollectCooldown: envDuration("COLLECT_COOLDOWN", 0),
 		AdminToken:      strings.TrimSpace(os.Getenv("HORIZON_ADMIN_TOKEN")),
 		Login:           login,

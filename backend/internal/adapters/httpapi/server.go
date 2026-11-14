@@ -117,6 +117,8 @@ type Server struct {
 	// Window is how far back a triggered collection looks (default 24h).
 	Window         time.Duration
 	AllowedOrigins []string
+	// FrontURL is the public frontend origin used in RSS/sitemap/canonical URLs.
+	FrontURL string
 	// CollectCooldown, when set, rejects a triggered collection (429 with
 	// Retry-After) that starts sooner than this after the previous one. It
 	// keeps a public deploy from burning the free model quotas.
@@ -167,6 +169,12 @@ func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, middleware.RealIP, s.requestLog, middleware.Recoverer, s.cors)
 	r.Get("/healthz", s.healthz)
+	r.Get("/robots.txt", s.robotsTxt)
+	r.Get("/sitemap.xml", s.sitemapXML)
+	r.Get("/rss.xml", s.rssFeed)
+	r.Get("/digests/rss.xml", s.rssDigests)
+	r.Get("/items/{id}", s.itemPublicHTML)
+	r.Get("/og/items/{file}", s.itemOGImage)
 	r.Route("/api", func(r chi.Router) {
 		r.Use(func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -186,6 +194,10 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/feed/timeline", s.feedTimeline)
 		r.Get("/items/{id}", s.item)
 		r.Post("/items/{id}/vote", s.voteItem)
+		r.Get("/og/items/{file}", s.itemOGImage)
+		r.Get("/rss/feed.xml", s.rssFeed)
+		r.Get("/rss/digests.xml", s.rssDigests)
+		r.Get("/sitemap.xml", s.sitemapXML)
 		r.Post("/newsletter/subscribe", s.subscribeNewsletter)
 		r.Post("/newsletter/confirm", s.confirmNewsletter)
 		r.Get("/newsletter/confirm", s.confirmNewsletter)
