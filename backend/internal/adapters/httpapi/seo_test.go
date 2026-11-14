@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"encoding/json"
 	"image/png"
 	"net/http"
 	"strings"
@@ -18,6 +19,35 @@ func TestSEOEndpointsRSSSitemapOGImageAndHTML(t *testing.T) {
 	resp, body := do(t, http.MethodGet, srv.URL+"/robots.txt", "")
 	if resp.StatusCode != 200 || !strings.Contains(body, "Sitemap: https://horizon-web-eight.vercel.app/sitemap.xml") {
 		t.Fatalf("robots.txt: %d %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "Content-Signal: search=yes, ai-input=yes, ai-train=yes") {
+		t.Fatalf("robots.txt missing Content-Signal: %s", body)
+	}
+	for _, bot := range []string{"OAI-SearchBot", "ChatGPT-User", "GPTBot", "Claude-SearchBot", "Claude-User", "ClaudeBot", "PerplexityBot", "Perplexity-User", "Google-Extended", "Applebot-Extended"} {
+		if !strings.Contains(body, "User-agent: "+bot) {
+			t.Fatalf("robots.txt missing bot %s: %s", bot, body)
+		}
+	}
+	for _, path := range []string{"/login", "/sources", "/forgot", "/reset", "/api/admin", "/api/pipeline", "/api/newsletter/send", "/api/items/ingest"} {
+		if !strings.Contains(body, "Disallow: "+path) {
+			t.Fatalf("robots.txt missing Disallow %s: %s", path, body)
+		}
+	}
+
+	// llms.txt
+	resp, body = do(t, http.MethodGet, srv.URL+"/llms.txt", "")
+	if resp.StatusCode != 200 || !strings.HasPrefix(body, "# Radar by JpDev") || !strings.Contains(body, "https://horizon-web-eight.vercel.app/sitemap.xml") || !strings.Contains(body, "/llms-full.txt") {
+		t.Fatalf("llms.txt: %d %s", resp.StatusCode, body)
+	}
+
+	// llms-full.txt includes the static index plus latest feed items
+	resp, body = do(t, http.MethodGet, srv.URL+"/llms-full.txt", "")
+	if resp.StatusCode != 200 || !strings.Contains(body, "## Últimas notícias") {
+		t.Fatalf("llms-full.txt: %d %s", resp.StatusCode, body)
+	}
+	resp, body = do(t, http.MethodGet, srv.URL+"/api/llms-full.txt", "")
+	if resp.StatusCode != 200 || !strings.Contains(body, "# Radar by JpDev") {
+		t.Fatalf("api llms-full.txt: %d %s", resp.StatusCode, body)
 	}
 
 	// sitemap.xml
@@ -47,10 +77,39 @@ func TestSEOEndpointsRSSSitemapOGImageAndHTML(t *testing.T) {
 		`property="og:title" content="one"`,
 		`name="twitter:card" content="summary_large_image"`,
 		`/api/og/items/1.png`,
+		`application/ld+json`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("item html missing %q:\n%s", want, body)
 		}
+	}
+	ldStart := strings.Index(body, `<script type="application/ld+json">`)
+	if ldStart < 0 {
+		t.Fatalf("item html missing JSON-LD script:\n%s", body)
+	}
+	ldRaw := body[ldStart+len(`<script type="application/ld+json">`):]
+	ldEnd := strings.Index(ldRaw, `</script>`)
+	if ldEnd < 0 {
+		t.Fatalf("item html JSON-LD is unclosed:\n%s", body)
+	}
+	var ld map[string]any
+	if err := json.Unmarshal([]byte(ldRaw[:ldEnd]), &ld); err != nil {
+		t.Fatalf("item html JSON-LD: %v\n%s", err, ldRaw[:ldEnd])
+	}
+	if ld["@type"] != "NewsArticle" || ld["inLanguage"] != "pt-BR" || ld["headline"] != "one" {
+		t.Fatalf("unexpected NewsArticle JSON-LD: %#v", ld)
+	}
+	// Seeded test items may have zero timestamps; when dates exist they must be RFC3339.
+	for _, key := range []string{"datePublished", "dateModified"} {
+		if raw, ok := ld[key]; ok {
+			s, _ := raw.(string)
+			if s == "" || !(len(s) >= 20) {
+				t.Fatalf("JSON-LD %s is not RFC3339: %#v", key, raw)
+			}
+		}
+	}
+	if pub, ok := ld["publisher"].(map[string]any); !ok || pub["name"] != "Radar by JpDev" || pub["alternateName"] != "Horizon by JpDev" {
+		t.Fatalf("JSON-LD publisher: %#v", ld["publisher"])
 	}
 
 	// Dynamic OG PNG endpoint decodes cleanly to 1200x630
