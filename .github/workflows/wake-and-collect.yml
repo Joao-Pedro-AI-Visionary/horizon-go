@@ -1,20 +1,17 @@
-# Twice-a-day collection for the Render free service, which sleeps after
-# 15 min without inbound traffic. The worker does not collect on its own
-# (COLLECT_INTERVAL=off): these runs are the schedule.
+# Manual collection trigger for the Render service.
 #
-#   07:30 and 16:30 America/Sao_Paulo (UTC-3) = 10:30 and 19:30 UTC
+# Regular twice-daily collections (07:30 and 16:30 America/Sao_Paulo) now run
+# inside cmd/api's internal scheduler with Postgres advisory locks and boot
+# catch-up when the free Render instance wakes from sleep (COLLECT_INTERVAL=off).
+# This workflow keeps workflow_dispatch only for manual runs.
 #
 # Repository secrets (Settings > Secrets and variables > Actions):
-#   HORIZON_API_URL      e.g. https://horizon-api.onrender.com
+#   HORIZON_API_URL      e.g. https://horizon-api-bzpg.onrender.com
 #   HORIZON_ADMIN_TOKEN  same value as the Render env var
-# GitHub runs "schedule" only from the default branch and may delay it by
-# a few minutes. See docs/deploy.md.
+# See docs/deploy.md.
 name: wake-and-collect
 
 on:
-  schedule:
-    - cron: "30 10 * * *" # 07:30 BRT
-    - cron: "30 19 * * *" # 16:30 BRT
   workflow_dispatch:
 
 permissions: {}

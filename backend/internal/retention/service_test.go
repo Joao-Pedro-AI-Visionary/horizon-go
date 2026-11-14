@@ -36,3 +36,31 @@ func TestServiceUsesCalendarCutoffAndForwardsDryRun(t *testing.T) {
 		t.Fatalf("report=%+v params=%+v", report, store.params)
 	}
 }
+
+func TestCanDeleteSafetyGuards(t *testing.T) {
+	cases := []struct {
+		name       string
+		counts     Counts
+		wantAllow  bool
+		wantReason string
+	}{
+		{"zero items", Counts{"items": 0, "items_total": 100, "feed_view": 0}, false, "no_candidate_items"},
+		{"negative items", Counts{"items": -1, "items_total": 100, "feed_view": 0}, false, "no_candidate_items"},
+		{"empty corpus", Counts{"items": 1, "items_total": 0, "feed_view": 0}, false, "empty_corpus"},
+		{"all items", Counts{"items": 10, "items_total": 10, "feed_view": 5}, false, "candidates_ge_total"},
+		{"items gt total", Counts{"items": 11, "items_total": 10, "feed_view": 5}, false, "candidates_ge_total"},
+		{"over 80 percent", Counts{"items": 81, "items_total": 100, "feed_view": 10}, false, "candidates_gt_80pct"},
+		{"over 80 percent small", Counts{"items": 5, "items_total": 6, "feed_view": 1}, false, "candidates_gt_80pct"},
+		{"exact 80 percent", Counts{"items": 80, "items_total": 100, "feed_view": 80}, true, "ok"},
+		{"feed_view gt items", Counts{"items": 5, "items_total": 100, "feed_view": 6}, false, "feed_view_gt_items"},
+		{"negative feed_view", Counts{"items": 5, "items_total": 100, "feed_view": -1}, false, "feed_view_gt_items"},
+		{"safe small batch", Counts{"items": 3, "items_total": 10, "feed_view": 2}, true, "ok"},
+	}
+	for _, tc := range cases {
+		got := CanDelete(tc.counts)
+		if got.Allow != tc.wantAllow || got.Reason != tc.wantReason {
+			t.Errorf("%s: got (allow=%v, reason=%q), want (allow=%v, reason=%q)",
+				tc.name, got.Allow, got.Reason, tc.wantAllow, tc.wantReason)
+		}
+	}
+}

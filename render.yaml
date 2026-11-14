@@ -57,7 +57,7 @@ services:
       # --- low memory / free-tier friendly ---
       - key: SCORE_WORKERS
         value: "1"
-      - key: COLLECT_INTERVAL # off: GitHub Actions triggers 07:30 and 16:30 BRT
+      - key: COLLECT_INTERVAL # off: disables worker loop so cmd/api internal scheduler runs 07:30 & 16:30 BRT collect and 01:00 BRT cleanup
         value: "off"
       - key: COLLECT_COOLDOWN
         value: 10m

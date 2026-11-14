@@ -12,6 +12,9 @@
 //	PORT            used as :$PORT when API_ADDR is unset (Render sets it)
 //	COLLECT_WINDOW  24h   how far back a triggered collection looks
 //	COLLECT_COOLDOWN 0    minimum time between triggered collections (429 inside it)
+//	COLLECT_INTERVAL 30m  worker interval; "off" enables the API's internal cron + catch-up scheduler
+//	INTERNAL_SCHEDULER    optional override ("on"/"off") for the internal scheduler
+//	TZ              America/Sao_Paulo  scheduler wall-clock timezone
 //	SOURCE_TIMEOUT  30s   per-source fetch timeout
 //	HORIZON_ADMIN_TOKEN   bearer token required by every write (POST/PUT/PATCH/DELETE)
 //	ADMIN_USERNAME  login user for the dashboard (POST /api/auth/login)
@@ -55,6 +58,7 @@ import (
 	"github.com/jpdev/horizon-go/internal/domain"
 	"github.com/jpdev/horizon-go/internal/ingest"
 	"github.com/jpdev/horizon-go/internal/retention"
+	"github.com/jpdev/horizon-go/internal/scheduler"
 )
 
 func getenv(k, def string) string {
@@ -184,6 +188,10 @@ func main() {
 }
 
 func run(ctx context.Context, log *slog.Logger) error {
+	schedEnabled, schedReason, err := config.ResolveInternalScheduler(os.Getenv)
+	if err != nil {
+		return err
+	}
 	pool, err := postgres.Connect(ctx, config.DatabaseURL())
 	if err != nil {
 		return err
@@ -209,6 +217,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	timeout := envDuration("SOURCE_TIMEOUT", app.DefaultSourceTimeout)
 	read := postgres.ReadRepo{DB: pool}
 	sources := postgres.SourceRepo{DB: pool}
+	schedRepo := postgres.SchedulerRepo{DB: pool}
 	collector := &app.Collector{Publisher: bus, Runs: postgres.FetchRunRepo{DB: pool}, Timeout: timeout, Log: log}
 	srv := &httpapi.Server{
 		Store:   read,
@@ -238,6 +247,20 @@ func run(ctx context.Context, log *slog.Logger) error {
 		RequireAdmin:    isProduction(os.Getenv),
 		Log:             log,
 	}
+	if schedEnabled {
+		srv.OnCollect = func(c context.Context, at time.Time) {
+			rctx, rcancel := context.WithTimeout(context.WithoutCancel(c), 5*time.Second)
+			defer rcancel()
+			if err := schedRepo.RecordManualCollect(rctx, at); err != nil {
+				log.Warn("scheduler: failed to persist collect timestamp", "err", err)
+			}
+		}
+		if st, err := schedRepo.EnsureJob(ctx, scheduler.JobCollect, time.Now().UTC()); err != nil {
+			log.Warn("scheduler: failed to load collect cooldown state", "err", err)
+		} else if st.LastRunAt != nil {
+			srv.SeedLastCollect(*st.LastRunAt)
+		}
+	}
 	hs := &http.Server{
 		Addr:              listenAddr(os.Getenv),
 		Handler:           srv.Handler(),
@@ -246,21 +269,52 @@ func run(ctx context.Context, log *slog.Logger) error {
 		WriteTimeout:      timeout + 2*time.Minute, // a triggered collection waits for its sources
 		IdleTimeout:       2 * time.Minute,
 	}
+	schedCtx, cancelSched := context.WithCancel(ctx)
+	defer cancelSched()
+	var schedDone chan error
+	if schedEnabled {
+		sched := &scheduler.Service{
+			Store:           schedRepo,
+			Collector:       srv,
+			Cleaner:         srv.Cleanup,
+			CollectCooldown: srv.CollectCooldown,
+			Log:             log,
+		}
+		schedDone = make(chan error, 1)
+		log.Info("internal scheduler enabled", "reason", schedReason, "timezone", scheduler.Timezone)
+		go func() {
+			schedDone <- sched.Run(schedCtx)
+		}()
+	} else {
+		log.Info("internal scheduler disabled", "reason", schedReason)
+	}
 	errc := make(chan error, 1)
 	go func() {
 		log.Info("api listening", "addr", hs.Addr, "cors", srv.AllowedOrigins,
 			"admin_token", srv.AdminToken != "", "login", srv.Login.Enabled(), "password_reset", srv.Reset.Enabled(), "writes_open", srv.WritesOpen())
 		errc <- hs.ListenAndServe()
 	}()
+	var exitErr error
 	select {
 	case err := <-errc:
-		return err
+		exitErr = err
 	case <-ctx.Done():
 	}
+	cancelSched()
 	sctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := hs.Shutdown(sctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+	if err := hs.Shutdown(sctx); err != nil && !errors.Is(err, http.ErrServerClosed) && exitErr == nil {
+		exitErr = err
 	}
-	return nil
+	if schedDone != nil {
+		select {
+		case err := <-schedDone:
+			if err != nil && exitErr == nil {
+				exitErr = err
+			}
+		case <-time.After(10 * time.Second):
+			log.Warn("internal scheduler did not stop within shutdown timeout")
+		}
+	}
+	return exitErr
 }

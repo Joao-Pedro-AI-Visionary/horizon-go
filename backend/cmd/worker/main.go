@@ -64,7 +64,7 @@ func main() {
 	seed := flag.Bool("seed", false, "insert the default sources when the sources table is empty")
 	window := flag.Duration("window", 24*time.Hour, "only keep items published within this window")
 	timeout := flag.Duration("timeout", app.DefaultSourceTimeout, "per-source fetch timeout")
-	interval := flag.Duration("interval", collectInterval(os.Getenv("COLLECT_INTERVAL"), 30*time.Minute), "collect interval in continuous mode, 0 = never (env COLLECT_INTERVAL, \"off\" = 0)")
+	interval := flag.Duration("interval", config.CollectInterval(os.Getenv("COLLECT_INTERVAL"), config.DefaultCollectInterval), "collect interval in continuous mode, 0 = never (env COLLECT_INTERVAL, \"off\" = 0)")
 	withDigest := flag.Bool("digest", true, "continuous mode: run the digest cron")
 	var o aiOptions
 	flag.BoolVar(&o.enabled, "ai", true, "run the scoring and dedup stages")
@@ -95,21 +95,6 @@ func getenv(k, def string) string {
 
 func envDuration(k string, def time.Duration) time.Duration {
 	if d, err := time.ParseDuration(os.Getenv(k)); err == nil && d > 0 {
-		return d
-	}
-	return def
-}
-
-// collectInterval parses COLLECT_INTERVAL: a duration, or "0"/"off" for no
-// periodic collection; anything else falls back to def.
-func collectInterval(v string, def time.Duration) time.Duration {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "":
-		return def
-	case "0", "off", "none", "false":
-		return 0
-	}
-	if d, err := time.ParseDuration(v); err == nil && d >= 0 {
 		return d
 	}
 	return def
@@ -266,7 +251,7 @@ func run(ctx context.Context, log *slog.Logger, once, seed bool, window, timeout
 		}()
 	}
 	if interval <= 0 {
-		log.Info("periodic collection off: waiting for POST /api/pipeline/run")
+		log.Info("periodic collection off: waiting for scheduled or manual collections")
 		<-ctx.Done()
 		return nil
 	}

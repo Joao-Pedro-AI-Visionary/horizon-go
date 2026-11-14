@@ -99,6 +99,10 @@ type Server struct {
 	// Retry-After) that starts sooner than this after the previous one. It
 	// keeps a public deploy from burning the free model quotas.
 	CollectCooldown time.Duration
+	// OnCollect, when set, is called when a full pipeline collection starts
+	// (either via POST /api/pipeline/run or the internal scheduler) to persist
+	// last_run_at across restarts.
+	OnCollect func(context.Context, time.Time)
 	// AdminToken guards every write (Authorization: Bearer). RequireAdmin
 	// makes writes fail closed (503) while AdminToken is empty; see auth.go.
 	AdminToken   string
@@ -111,6 +115,19 @@ type Server struct {
 
 	collecting  sync.Mutex
 	lastCollect time.Time // guarded by collecting
+}
+
+// SeedLastCollect initializes the in-memory cooldown timestamp from persisted
+// state so COLLECT_COOLDOWN continues holding after a restart or cold start.
+func (s *Server) SeedLastCollect(t time.Time) {
+	if t.IsZero() {
+		return
+	}
+	s.collecting.Lock()
+	defer s.collecting.Unlock()
+	if t.After(s.lastCollect) {
+		s.lastCollect = t
+	}
 }
 
 func (s *Server) log() *slog.Logger {

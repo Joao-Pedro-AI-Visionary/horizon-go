@@ -8,6 +8,7 @@ import (
 	"github.com/jpdev/horizon-go/internal/adapters/llm/cloudflare"
 	"github.com/jpdev/horizon-go/internal/adapters/llm/ollama"
 	"github.com/jpdev/horizon-go/internal/adapters/llm/openai"
+	"github.com/jpdev/horizon-go/internal/config"
 )
 
 func envOf(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
@@ -76,7 +77,7 @@ func TestCollectInterval(t *testing.T) {
 	}{
 		{"", 30 * time.Minute}, {"off", 0}, {"0", 0}, {"OFF", 0}, {"12h", 12 * time.Hour}, {"junk", 30 * time.Minute},
 	} {
-		if got := collectInterval(c.in, 30*time.Minute); got != c.want {
+		if got := config.CollectInterval(c.in, 30*time.Minute); got != c.want {
 			t.Errorf("%q: got %v want %v", c.in, got, c.want)
 		}
 	}

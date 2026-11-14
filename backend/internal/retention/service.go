@@ -24,6 +24,41 @@ type Params struct {
 // dry-run audit and the real delete result.
 type Counts map[string]int64
 
+// DeleteDecision describes whether a real delete is safe given dry-run counts.
+type DeleteDecision struct {
+	Allow  bool
+	Reason string
+	Items  int64
+	Total  int64
+	Feed   int64
+}
+
+// CanDelete checks the retention safety invariants against dry-run counts:
+// the candidate set must be non-zero, strictly smaller than items_total,
+// at most 80% of items_total, and feed_view candidates must not exceed items.
+func CanDelete(counts Counts) DeleteDecision {
+	items := counts["items"]
+	total := counts["items_total"]
+	feed := counts["feed_view"]
+	d := DeleteDecision{Items: items, Total: total, Feed: feed}
+	switch {
+	case items <= 0:
+		d.Reason = "no_candidate_items"
+	case total <= 0:
+		d.Reason = "empty_corpus"
+	case items >= total:
+		d.Reason = "candidates_ge_total"
+	case items > (total*80)/100:
+		d.Reason = "candidates_gt_80pct"
+	case feed < 0 || feed > items:
+		d.Reason = "feed_view_gt_items"
+	default:
+		d.Allow = true
+		d.Reason = "ok"
+	}
+	return d
+}
+
 // Report is the stable JSON contract returned by the cleanup endpoint.
 type Report struct {
 	DryRun        bool      `json:"dry_run"`

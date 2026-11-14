@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -14,6 +16,7 @@ import (
 	"github.com/jpdev/horizon-go/internal/app"
 	"github.com/jpdev/horizon-go/internal/domain"
 	"github.com/jpdev/horizon-go/internal/ingest"
+	"github.com/jpdev/horizon-go/internal/scheduler"
 )
 
 const (
@@ -442,22 +445,37 @@ func (s *Server) window() time.Duration {
 	return s.Window
 }
 
-// collect runs one collection at a time; a second request gets 409.
-func (s *Server) collect(w http.ResponseWriter, r *http.Request, run func() (app.Report, error)) {
+func (s *Server) tryCollect(ctx context.Context, isFullPipeline bool, run func() (app.Report, error)) (rep app.Report, busy bool, retryAfter time.Duration, err error) {
 	if !s.collecting.TryLock() {
-		writeError(w, http.StatusConflict, "a collection is already running")
-		return
+		return app.Report{}, true, 0, nil
 	}
 	defer s.collecting.Unlock()
 	if s.CollectCooldown > 0 && !s.lastCollect.IsZero() {
 		if wait := s.CollectCooldown - time.Since(s.lastCollect); wait > 0 {
-			w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
-			writeError(w, http.StatusTooManyRequests, "a collection ran recently; try again later")
-			return
+			return app.Report{}, false, wait, nil
 		}
 	}
-	s.lastCollect = time.Now()
-	rep, err := run()
+	now := time.Now()
+	s.lastCollect = now
+	if isFullPipeline && s.OnCollect != nil {
+		s.OnCollect(ctx, now)
+	}
+	rep, err = run()
+	return rep, false, 0, err
+}
+
+// collect runs one collection at a time; a second request gets 409.
+func (s *Server) collect(w http.ResponseWriter, r *http.Request, isFullPipeline bool, run func() (app.Report, error)) {
+	rep, busy, wait, err := s.tryCollect(r.Context(), isFullPipeline, run)
+	if busy {
+		writeError(w, http.StatusConflict, "a collection is already running")
+		return
+	}
+	if wait > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		writeError(w, http.StatusTooManyRequests, "a collection ran recently; try again later")
+		return
+	}
 	if err != nil && rep.RunID == "" {
 		s.fail(w, r, err)
 		return
@@ -472,6 +490,31 @@ func (s *Server) collect(w http.ResponseWriter, r *http.Request, run func() (app
 	writeJSON(w, status, toReport(rep, err))
 }
 
+// RunScheduledCollect executes a full pipeline collection through the same
+// mutex and cooldown guards used by POST /api/pipeline/run.
+func (s *Server) RunScheduledCollect(ctx context.Context) (scheduler.CollectOutcome, error) {
+	if s.Collector == nil {
+		return scheduler.CollectOutcome{}, errors.New("collector is not configured")
+	}
+	since := time.Now().Add(-s.window())
+	rep, busy, wait, err := s.tryCollect(ctx, true, func() (app.Report, error) {
+		return s.Collector.Collect(ctx, since)
+	})
+	if busy {
+		return scheduler.CollectOutcome{Skipped: true, SkipReason: "already_running"}, nil
+	}
+	if wait > 0 {
+		return scheduler.CollectOutcome{Skipped: true, SkipReason: "cooldown", RetryAfter: wait}, nil
+	}
+	return scheduler.CollectOutcome{
+		RunID:      rep.RunID,
+		Fetched:    rep.Fetched,
+		Published:  rep.Published,
+		Duplicates: rep.Duplicates,
+		Invalid:    rep.Invalid,
+	}, err
+}
+
 func (s *Server) fetchSource(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
@@ -479,12 +522,12 @@ func (s *Server) fetchSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	since := time.Now().Add(-s.window())
-	s.collect(w, r, func() (app.Report, error) { return s.Collector.CollectSource(r.Context(), id, since) })
+	s.collect(w, r, false, func() (app.Report, error) { return s.Collector.CollectSource(r.Context(), id, since) })
 }
 
 func (s *Server) runPipeline(w http.ResponseWriter, r *http.Request) {
 	since := time.Now().Add(-s.window())
-	s.collect(w, r, func() (app.Report, error) { return s.Collector.Collect(r.Context(), since) })
+	s.collect(w, r, true, func() (app.Report, error) { return s.Collector.Collect(r.Context(), since) })
 }
 
 func (s *Server) cleanupPipeline(w http.ResponseWriter, r *http.Request) {

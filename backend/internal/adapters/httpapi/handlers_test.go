@@ -316,3 +316,64 @@ func TestCollectCooldown(t *testing.T) {
 		t.Errorf("collector ran %d times", col.n)
 	}
 }
+
+func TestRunScheduledCollectRespectsLocksCooldownAndOnCollect(t *testing.T) {
+	s, _, srv := newTestServer(t)
+	col := s.Collector.(*blockingCollector)
+
+	// Nil collector fails loudly.
+	emptySrv := &Server{}
+	if _, err := emptySrv.RunScheduledCollect(context.Background()); err == nil {
+		t.Fatal("expected error for nil Collector")
+	}
+
+	// Simulate an active HTTP collection; scheduled collect should skip (already_running).
+	doneHTTP := make(chan int)
+	go func() {
+		resp, _ := do(t, "POST", srv.URL+"/api/pipeline/run", "")
+		doneHTTP <- resp.StatusCode
+	}()
+	<-col.started
+	out, err := s.RunScheduledCollect(context.Background())
+	if err != nil || !out.Skipped || out.SkipReason != "already_running" {
+		t.Fatalf("while HTTP running: got out=%+v err=%v, want Skipped already_running", out, err)
+	}
+	close(col.release)
+	if code := <-doneHTTP; code != 200 {
+		t.Fatalf("HTTP collect status=%d", code)
+	}
+
+	// Fresh server with cooldown + OnCollect hook + SeedLastCollect.
+	s2, _, srv2 := newTestServer(t)
+	cc := &countingCollector{}
+	var hooked int
+	s2.Collector = cc
+	s2.CollectCooldown = time.Hour
+	s2.OnCollect = func(_ context.Context, _ time.Time) { hooked++ }
+
+	// Seeding a recent timestamp enforces cooldown without hitting Collector.
+	s2.SeedLastCollect(time.Now().Add(-5 * time.Minute))
+	out, err = s2.RunScheduledCollect(context.Background())
+	if err != nil || !out.Skipped || out.SkipReason != "cooldown" || out.RetryAfter <= 0 {
+		t.Fatalf("cooldown after seed: got out=%+v err=%v", out, err)
+	}
+	if cc.n != 0 || hooked != 0 {
+		t.Fatalf("expected 0 runs during cooldown, got cc=%d hooked=%d", cc.n, hooked)
+	}
+
+	// Reset cooldown window and confirm both HTTP pipeline run and scheduled run call OnCollect.
+	s2.CollectCooldown = 0
+	out, err = s2.RunScheduledCollect(context.Background())
+	if err != nil || out.Skipped || out.RunID != "r" {
+		t.Fatalf("scheduled run: got out=%+v err=%v", out, err)
+	}
+	if resp, _ := do(t, "POST", srv2.URL+"/api/pipeline/run", ""); resp.StatusCode != 200 {
+		t.Fatalf("manual pipeline run status=%d", resp.StatusCode)
+	}
+	if resp, _ := do(t, "POST", srv2.URL+"/api/sources/1/fetch", ""); resp.StatusCode != 200 {
+		t.Fatalf("single-source fetch status=%d", resp.StatusCode)
+	}
+	if cc.n != 3 || hooked != 2 {
+		t.Fatalf("expected cc=3 and hooked=2 (only full pipeline runs), got cc=%d hooked=%d", cc.n, hooked)
+	}
+}

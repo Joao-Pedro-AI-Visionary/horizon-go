@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/jpdev/horizon-go/internal/config"
 )
 
 func TestCORSOrigins(t *testing.T) {
@@ -75,5 +77,20 @@ func TestLoginFromEnv(t *testing.T) {
 	}
 	if _, err := loginFromEnv(env(map[string]string{"ADMIN_USERNAME": "joao", "ADMIN_PASSWORD": "x", "SESSION_SECRET": "short"}), log); err == nil {
 		t.Fatal("short secret accepted")
+	}
+}
+
+func TestInternalSchedulerMode(t *testing.T) {
+	env := func(m map[string]string) func(string) string {
+		return func(k string) string { return m[k] }
+	}
+	if enabled, _, err := config.ResolveInternalScheduler(env(map[string]string{"COLLECT_INTERVAL": "off"})); err != nil || !enabled {
+		t.Fatalf("Render config (COLLECT_INTERVAL=off): enabled=%v err=%v", enabled, err)
+	}
+	if enabled, _, err := config.ResolveInternalScheduler(env(nil)); err != nil || enabled {
+		t.Fatalf("Local default config (COLLECT_INTERVAL unset): enabled=%v err=%v", enabled, err)
+	}
+	if _, _, err := config.ResolveInternalScheduler(env(map[string]string{"INTERNAL_SCHEDULER": "true"})); err == nil {
+		t.Fatal("expected error enabling INTERNAL_SCHEDULER while worker COLLECT_INTERVAL is active")
 	}
 }

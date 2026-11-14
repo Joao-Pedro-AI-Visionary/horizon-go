@@ -1,13 +1,12 @@
-# Daily 32-day retention for the Render free service. This workflow always
-# dry-runs first; a real delete is allowed only when the candidate set is
-# non-zero and clearly smaller than the stored corpus.
+# Manual 32-day retention cleanup trigger for the Render service.
 #
-# 01:00 America/Sao_Paulo (UTC-3) = 04:00 UTC.
+# Regular daily retention (01:00 America/Sao_Paulo) now runs inside cmd/api's
+# internal scheduler with Postgres advisory locks, boot catch-up, dry-run first,
+# and the same Go safety guards. This workflow keeps workflow_dispatch only for
+# manual dry-run/cleanup execution.
 name: cleanup-retention
 
 on:
-  schedule:
-    - cron: "0 4 * * *" # 01:00 BRT
   workflow_dispatch:
 
 permissions: {}

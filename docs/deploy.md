@@ -108,30 +108,23 @@ erro nem retry. `EMBED_PROVIDER=none` faz o mesmo de forma permanente.
    `HORIZON_CORS_ORIGINS` no Render. Se mudar o valor, o Render reinicia o
    serviço sozinho.
 
-## Coleta 2x por dia (serviço dormindo)
+## Coleta 2x por dia (agendador interno e serviço dormindo)
 
-O Render free **dorme depois de 15 minutos sem tráfego de entrada**. Por isso
-o worker não coleta sozinho (`COLLECT_INTERVAL=off`): ele só pontua, deduplica
-e roda o digest enquanto está acordado. As coletas vêm do workflow
-`.github/workflows/wake-and-collect.yml`:
+O Render free **dorme depois de 15 minutos sem tráfego HTTP/WebSocket de entrada** e leva cerca de 1 minuto para acordar ([docs oficiais](https://render.com/docs/free)). Para evitar o loop contínuo local (`30m`), a variável `COLLECT_INTERVAL=off` mantém o worker apenas pontuando, deduplicando e gerando digest, e ativa o **agendador interno em `cmd/api`** no fuso `America/Sao_Paulo`:
 
-| Horário (America/Sao_Paulo) | Cron (UTC) |
-|---|---|
-| 07:30 | `30 10 * * *` |
-| 16:30 | `30 19 * * *` |
+| Job | Horário (America/Sao_Paulo) | Equivalente UTC | Mecanismo |
+|---|---|---|---|
+| Coleta (`collect`) | 07:30 e 16:30 | `10:30` e `19:30` | Runner interno (mesmo mutex e `COLLECT_COOLDOWN=10m` de `POST /api/pipeline/run`) |
+| Retenção (`cleanup`) | 01:00 | `04:00` | `retention.Service` (dry-run interno + travas em Go) |
 
-Cada execução acorda o serviço (`GET /healthz`, até 10 tentativas), depois faz
-`POST /api/pipeline/run` com `Authorization: Bearer $HORIZON_ADMIN_TOKEN`,
-tentando de novo em erro 5xx. `409` (coleta em andamento) e `429`
-(`COLLECT_COOLDOWN=10m`) contam como sucesso. `COLLECT_WINDOW=16h` cobre o
-intervalo de 15 h entre as duas execuções.
+Como funciona:
 
-Segredos do repositório (*Settings → Secrets and variables → Actions*):
-`HORIZON_API_URL` (URL do Render, sem barra) e `HORIZON_ADMIN_TOKEN`.
-O GitHub só roda `schedule` a partir da branch padrão (`main`) e pode atrasar
-alguns minutos.
+- **Sem duplicidade entre instâncias**: cada tipo de job usa um advisory lock dedicado de sessão no Postgres (`pg_try_advisory_lock`) sobre conexão própria, além do estado persistido na tabela `scheduler_state` (`installed_at`, `last_slot_at`, `last_run_at`, `last_success_at`). Coleta e limpeza nunca rodam no mesmo tick.
+- **Comportamento quando o Render dorme**: nenhum código executa enquanto a instância está hibernada. Assim que a API acorda — por qualquer acesso (abertura do dashboard, push do radar do X, disparo manual ou ping externo em `GET /healthz`) — o **catch-up no boot** verifica `scheduler_state` e executa sequencialmente os slots vencidos ainda não concluídos, respeitando `COLLECT_COOLDOWN=10m` (inclusive após chamadas manuais a `POST /api/pipeline/run`, cujo timestamp também é persistido). `COLLECT_WINDOW=16h` cobre o intervalo entre 16:30 e 07:30.
+- **Ping externo opcional**: se você quiser garantir que os horários de 07:30, 16:30 ou 01:00 rodem perto do minuto exato mesmo sem ninguém abrir o app, configure um monitor gratuito externo (UptimeRobot / cron-job.org) fazendo apenas `GET /healthz` após esses horários. Como não precisa de token, o ping só acorda o serviço e o catch-up interno faz o resto.
+- **Disparo manual**: `.github/workflows/wake-and-collect.yml` permanece no repositório sem `schedule:`, apenas com `workflow_dispatch`, para acionar uma coleta manual pelo GitHub se necessário (requer `HORIZON_API_URL` e `HORIZON_ADMIN_TOKEN`).
 
-Abrir o front acorda o serviço, mas **não** dispara coleta.
+Abrir o front acorda o serviço e dispara o catch-up caso exista coleta vencida no dia, sem gerar segunda coleta se o slot já tiver sido concluído.
 
 ## Limites grátis (verificados em 12/11/2026)
 
@@ -179,8 +172,8 @@ onde o token é um destes:
   - Limite: 5 tentativas erradas por minuto por IP. Depois disso o IP fica
     bloqueado por 1 min, e cada erro seguinte dobra o bloqueio, até 15 min
     (`429` com `Retry-After`). A mensagem de erro é sempre genérica.
-- **`HORIZON_ADMIN_TOKEN`:** token fixo das automações (o workflow 2x/dia e o
-  push do radar do X).
+- **`HORIZON_ADMIN_TOKEN`:** token fixo das automações (push do radar do X e
+  workflows/chamadas manuais na API).
 
 Sem token ou com token inválido, a API responde `401`. Em produção
 (`HORIZON_ENV=production` ou no Render), sem nenhuma credencial configurada,
@@ -245,7 +238,8 @@ Veja `.env.production.example`. Resumo:
 | `EMBED_PROVIDER` | `cloudflare` | `ollama` (padrão local), `cloudflare` ou `none` |
 | `EMBED_MODEL` | `@cf/baai/bge-base-en-v1.5` | precisa ter 768 dims |
 | `SCORE_WORKERS` | `1` | |
-| `COLLECT_INTERVAL` | `off` | sem coleta própria; o GitHub Actions dispara 07:30 e 16:30 BRT (`30m` local) |
+| `COLLECT_INTERVAL` | `off` | desliga o loop contínuo do worker (`30m` local) e habilita o agendador interno em `cmd/api` (07:30/16:30 coleta e 01:00 retenção em BRT) |
+| `INTERNAL_SCHEDULER` | auto (opcional) | vazio segue `COLLECT_INTERVAL=off`; `off`/`false` força desligado; `on`/`true` falha no boot se `COLLECT_INTERVAL` não estiver `off` |
 | `COLLECT_WINDOW` | `16h` | quão para trás uma coleta olha |
 | `COLLECT_COOLDOWN` | `10m` | intervalo mínimo entre coletas disparadas pela API |
 | `WORKER_SEED` | `true` | cria as fontes padrão só com a tabela `sources` vazia |
@@ -268,12 +262,19 @@ Deploy → Branch*).
 
 ## Retenção diária de 32 dias
 
-O workflow `.github/workflows/cleanup-retention.yml` roda às 01:00 em
-`America/Sao_Paulo` (`0 4 * * *` em UTC), acorda o Render por `/healthz` e
-chama `POST /api/pipeline/cleanup?dry_run=true` com `HORIZON_ADMIN_TOKEN`.
-Quando existem candidatos, o próprio workflow verifica se o conjunto é
-não-zero e menor que 80% do corpus antes de chamar uma única vez
-`dry_run=false`. Se o dry-run for zero ou perigoso, nenhuma linha é apagada.
+O agendador interno em `cmd/api` executa a limpeza diariamente às **01:00 em
+`America/Sao_Paulo`** (`04:00` UTC) — e também no catch-up ao acordar caso o slot
+tenha ficado vencido **após** o marco inicial `installed_at` gravado na primeira
+subida (evitando exclusões inesperadas no primeiro boot logo após o deploy). A
+regra em código (`retention.CanDelete` no backend, não só no YAML) sempre faz um
+**dry-run interno antes** e só executa o delete real quando:
+
+- `items > 0` e `items_total > 0`
+- `items < items_total` e `items <= 80%` de `items_total`
+- `feed_view <= items`
+
+Se qualquer trava falhar ou não houver candidatos (`items == 0`), a execução
+registra o motivo do skip/bloqueio no log e nenhuma linha é apagada.
 
 O cutoff retém 32 dias calendários e usa
 `COALESCE(items.published_at, items.fetched_at)` em `America/Sao_Paulo`. A
@@ -292,9 +293,8 @@ Invoke-WebRequest -Method Post -Uri "$env:HORIZON_API_URL/api/pipeline/cleanup?d
 Invoke-WebRequest -Method Post -Uri "$env:HORIZON_API_URL/api/pipeline/cleanup?dry_run=false" -Headers @{ Authorization = "Bearer $env:HORIZON_ADMIN_TOKEN" }
 ```
 
-O schedule do GitHub só executa a partir da branch padrão; portanto este
-workflow precisa estar em `main`. A execução também pode ser iniciada pelo
-botão `workflow_dispatch` na aba Actions.
+O workflow `.github/workflows/cleanup-retention.yml` permanece sem `schedule:`,
+apenas com o botão manual `workflow_dispatch` na aba Actions.
 
 ## Itens empurrados (radar do X)
 

@@ -103,7 +103,9 @@ O front (Vue 3 + Vite + TS + Pinia + Vue Router + Tailwind v4, e2e Playwright, t
 | `GET/POST /api/sources` · `PATCH/DELETE /api/sources/{id}` · `POST /api/sources/{id}/fetch` | CRUD de fontes e coleta manual |
 | `GET/PUT /api/settings` | nota de corte, máximo de itens, cota por fonte, cron e fuso do digest |
 | `GET /api/metrics?days=7\|14\|30` | itens/dia, por fonte, dedup, falhas e tokens |
-| `POST /api/pipeline/run` | coleta todas as fontes ativas e publica no NATS |
+| `POST /api/pipeline/run` | coleta todas as fontes ativas e publica no NATS (também acionada 2x/dia pelo agendador interno com `COLLECT_INTERVAL=off`) |
+| `POST /api/pipeline/cleanup?dry_run=true\|false` | avalia ou executa a retenção de 32 dias (`dry_run=true` padrão; agendador interno roda 01:00 BRT) |
+| `POST /api/items/ingest` | recebe lote JSON para a fonte push `X (radar)` |
 
 ## Como rodar no Windows (Docker no WSL)
 
