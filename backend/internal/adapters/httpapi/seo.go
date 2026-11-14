@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"html"
@@ -259,12 +260,186 @@ func (s *Server) sitemapXML(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+var aiSearchBots = []string{
+	"OAI-SearchBot",
+	"ChatGPT-User",
+	"GPTBot",
+	"Claude-SearchBot",
+	"Claude-User",
+	"ClaudeBot",
+	"PerplexityBot",
+	"Perplexity-User",
+	"Google-Extended",
+	"Applebot-Extended",
+}
+
+func robotsTxtBody(sitemapBase string) string {
+	var b strings.Builder
+	b.WriteString("# Radar by JpDev — regras para buscadores e IAs\n")
+	b.WriteString("# Content-Signal: https://contentsignals.org/\n")
+	b.WriteString("Content-Signal: search=yes, ai-input=yes, ai-train=yes\n\n")
+	b.WriteString("User-agent: *\n")
+	b.WriteString("Allow: /\n")
+	for _, path := range []string{"/login", "/sources", "/forgot", "/reset", "/api/admin", "/api/pipeline", "/api/newsletter/send", "/api/items/ingest"} {
+		fmt.Fprintf(&b, "Disallow: %s\n", path)
+	}
+	b.WriteString("\n# Robôs de busca e citação das IAs (permissão explícita).\n")
+	for _, bot := range aiSearchBots {
+		fmt.Fprintf(&b, "\nUser-agent: %s\nAllow: /\n", bot)
+	}
+	fmt.Fprintf(&b, "\nSitemap: %s/sitemap.xml\n", strings.TrimRight(sitemapBase, "/"))
+	return b.String()
+}
+
 func (s *Server) robotsTxt(w http.ResponseWriter, r *http.Request) {
-	base := s.publicSiteBase(r)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprintf(w, "User-agent: *\nAllow: /\nDisallow: /login\nDisallow: /sources\nDisallow: /forgot\nDisallow: /reset\nSitemap: %s/sitemap.xml\n", base)
+	_, _ = w.Write([]byte(robotsTxtBody(s.publicSiteBase(r))))
+}
+
+func llmsTxtBody(site string) string {
+	site = strings.TrimRight(site, "/")
+	return fmt.Sprintf(`# Radar by JpDev
+
+> Curadoria diária de notícias de tecnologia, engenharia e IA, pontuada automaticamente e publicada em português. Também conhecido como Horizon by JpDev.
+
+O feed é público. Não é preciso criar conta para ler, buscar, ver o digest do dia ou reagir com like e deslike.
+
+## Site
+
+- [Página inicial](%[1]s/): feed principal, busca e seção Em alta
+- [Digests](%[1]s/digests): resumo diário das notícias mais relevantes
+- [Métricas](%[1]s/metrics): visão do volume coletado e das fontes
+
+## Feeds e descoberta
+
+- [RSS do feed](%[1]s/rss.xml): itens mais recentes do radar
+- [RSS dos digests](%[1]s/digests/rss.xml): edições diárias
+- [Sitemap](%[1]s/sitemap.xml): URLs canônicas das notícias e dos digests
+- [Índice completo para IAs](%[1]s/llms-full.txt): últimas notícias em texto
+
+## Sobre
+
+- [Radar by JpDev](%[1]s/): projeto de João Pedro (JpDev), com nota de IA, digest às 08:00 (horário de Brasília) e páginas próprias por notícia, com link para a fonte original.
+- Busca pública: %[1]s/?q={termo}
+`, site)
+}
+
+func mdLinkText(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	s = strings.ReplaceAll(s, "[", "(")
+	s = strings.ReplaceAll(s, "]", ")")
+	return s
+}
+
+func oneLineSummary(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if rs := []rune(s); len(rs) > 240 {
+		return strings.TrimSpace(string(rs[:237])) + "…"
+	}
+	return s
+}
+
+func (s *Server) llmsTxt(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(llmsTxtBody(s.publicSiteBase(r))))
+}
+
+func (s *Server) llmsFullTxt(w http.ResponseWriter, r *http.Request) {
+	site := s.publicSiteBase(r)
+	var b strings.Builder
+	b.WriteString(llmsTxtBody(site))
+	b.WriteString("\n## Últimas notícias\n\n")
+	if s.Store != nil {
+		page, err := s.Store.Feed(r.Context(), domain.FeedQuery{Sort: "recent", Page: 1, PageSize: 20})
+		if err == nil {
+			for _, it := range page.Items {
+				title := mdLinkText(it.Title)
+				if title == "" {
+					continue
+				}
+				link := fmt.Sprintf("%s/items/%d", strings.TrimRight(site, "/"), it.ItemID)
+				if summary := oneLineSummary(it.Summary); summary != "" {
+					fmt.Fprintf(&b, "- [%s](%s): %s\n", title, link, summary)
+				} else {
+					fmt.Fprintf(&b, "- [%s](%s)\n", title, link)
+				}
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=300, stale-while-revalidate=600")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(b.String()))
+}
+
+func encodeJSONLD(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "{}"
+	}
+	s := string(b)
+	s = strings.ReplaceAll(s, "<", `\u003c`)
+	s = strings.ReplaceAll(s, ">", `\u003e`)
+	s = strings.ReplaceAll(s, "&", `\u0026`)
+	return s
+}
+
+func newsArticleJSONLD(it domain.ItemDetail, site, canonical, ogImg, desc string) map[string]any {
+	site = strings.TrimRight(site, "/")
+	org := map[string]any{
+		"@type":         "Organization",
+		"@id":           site + "/#organization",
+		"name":          "Radar by JpDev",
+		"alternateName": "Horizon by JpDev",
+		"url":           site + "/",
+		"logo":          map[string]any{"@type": "ImageObject", "url": "https://github.com/Joao-Pedro-AI-Visionary.png"},
+	}
+	published := ""
+	if it.PublishedAt != nil && !it.PublishedAt.IsZero() {
+		published = it.PublishedAt.UTC().Format(time.RFC3339)
+	} else if !it.FetchedAt.IsZero() {
+		published = it.FetchedAt.UTC().Format(time.RFC3339)
+	}
+	modified := ""
+	if !it.FetchedAt.IsZero() {
+		modified = it.FetchedAt.UTC().Format(time.RFC3339)
+	} else {
+		modified = published
+	}
+	ld := map[string]any{
+		"@context":         "https://schema.org",
+		"@type":            "NewsArticle",
+		"headline":         it.Title,
+		"description":      desc,
+		"inLanguage":       "pt-BR",
+		"url":              canonical,
+		"mainEntityOfPage": map[string]any{"@type": "WebPage", "@id": canonical},
+		"image":            []string{ogImg},
+		"author":           org,
+		"publisher":        org,
+	}
+	if published != "" {
+		ld["datePublished"] = published
+	}
+	if modified != "" {
+		ld["dateModified"] = modified
+	}
+	if src := safeHTTPURL(it.URL); src != "" {
+		ld["isBasedOn"] = src
+		name := strings.TrimSpace(it.SourceName)
+		if name == "" {
+			name = strings.TrimSpace(it.Author)
+		}
+		if name == "" {
+			name = "Fonte original"
+		}
+		ld["citation"] = map[string]any{"@type": "CreativeWork", "name": name, "url": src}
+	}
+	return ld
 }
 
 func (s *Server) itemPublicHTML(w http.ResponseWriter, r *http.Request) {
@@ -324,6 +499,7 @@ func (s *Server) itemPublicHTML(w http.ResponseWriter, r *http.Request) {
   <meta name="twitter:title" content="%[4]s" />
   <meta name="twitter:description" content="%[2]s" />
   <meta name="twitter:image" content="%[5]s" />
+  <script type="application/ld+json">%[8]s</script>
 </head>
 <body style="margin:0;padding:32px;background:#eef2ee;font-family:Inter,system-ui,sans-serif;color:#121a14;">
   <main style="max-width:720px;margin:0 auto;background:#ffffff;border-radius:24px;padding:32px;">
@@ -341,5 +517,6 @@ func (s *Server) itemPublicHTML(w http.ResponseWriter, r *http.Request) {
 		html.EscapeString(ogImg),
 		html.EscapeString(scoreText),
 		linkHTML,
+		encodeJSONLD(newsArticleJSONLD(it, site, canonical, ogImg, desc)),
 	)
 }
