@@ -67,8 +67,10 @@ func TestNewsletterRoutesAndAuthProtection(t *testing.T) {
 	}
 
 	// Public confirm & unsubscribe work without admin token.
-	resp, body = do(t, http.MethodPost, srv.URL+"/api/newsletter/confirm", `{"token":"tok_conf"}`)
-	if resp.StatusCode != 200 || fn.confirmTok != "tok_conf" {
+	confirmCode := "tok_conf"
+	confirmPayload, _ := json.Marshal(map[string]string{"token": confirmCode})
+	resp, body = do(t, http.MethodPost, srv.URL+"/api/newsletter/confirm", string(confirmPayload))
+	if resp.StatusCode != 200 || fn.confirmTok != confirmCode {
 		t.Fatalf("confirm: %d %s", resp.StatusCode, body)
 	}
 	resp, body = do(t, http.MethodGet, srv.URL+"/api/newsletter/unsubscribe?token=tok_unsub", "")
