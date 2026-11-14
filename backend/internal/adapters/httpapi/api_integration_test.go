@@ -27,6 +27,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/jpdev/horizon-go/internal/adapters/bus/natsbus"
+	"github.com/jpdev/horizon-go/internal/adapters/mail/resend"
 	"github.com/jpdev/horizon-go/internal/adapters/source"
 	"github.com/jpdev/horizon-go/internal/adapters/store/postgres"
 	"github.com/jpdev/horizon-go/internal/app"
@@ -34,6 +35,7 @@ import (
 	"github.com/jpdev/horizon-go/internal/digest"
 	"github.com/jpdev/horizon-go/internal/domain"
 	"github.com/jpdev/horizon-go/internal/ingest"
+	"github.com/jpdev/horizon-go/internal/newsletter"
 	"github.com/jpdev/horizon-go/internal/retention"
 	"github.com/jpdev/horizon-go/migrations"
 )
@@ -79,7 +81,7 @@ func testDB(t *testing.T, ctx context.Context) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	if _, err := pool.Exec(ctx, `TRUNCATE sources, items, fetch_runs, clusters, feed_view, ai_cache, digests, llm_usage, vote_rate_limits RESTART IDENTITY CASCADE;
+	if _, err := pool.Exec(ctx, `TRUNCATE sources, items, fetch_runs, clusters, feed_view, ai_cache, digests, llm_usage, vote_rate_limits, newsletter_subscribers, newsletter_deliveries RESTART IDENTITY CASCADE;
 UPDATE settings SET score_threshold = 6, digest_max_items = 20, digest_per_source = 8, digest_cron = '0 7 * * *', timezone = 'America/Sao_Paulo'`); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
@@ -690,5 +692,130 @@ func TestVotesAndTrendingIntegration(t *testing.T) {
 	}
 	if n := e.scalar(`SELECT count(*) FROM vote_rate_limits`); n != 0 {
 		t.Fatalf("expected expired rate limits pruned, got %d", n)
+	}
+}
+
+func TestNewsletterPostgresIntegration(t *testing.T) {
+	if os.Getenv("HORIZON_SKIP_INTEGRATION") == "1" {
+		t.Skip("HORIZON_SKIP_INTEGRATION=1")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	pool := testDB(t, ctx)
+	now := time.Now().UTC()
+
+	sources := postgres.SourceRepo{DB: pool}
+	items := postgres.ItemRepo{DB: pool}
+	ai := postgres.AIRepo{DB: pool}
+	src, err := sources.Create(ctx, domain.SourceConfig{Kind: domain.KindHackerNews, Name: "HN", Enabled: true, Config: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 8; i++ {
+		id, err := items.Upsert(ctx, domain.Item{
+			SourceID: src.ID, ExternalID: fmt.Sprintf("nl-%d", i),
+			URL: fmt.Sprintf("https://news.example/nl-%d", i), Title: fmt.Sprintf("Newsletter Story %d", i),
+			PublishedAt: now.Add(-time.Duration(i) * time.Hour), FetchedAt: now,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ai.SaveScore(ctx, id, domain.Analysis{Score: 8.5 - float64(i)*0.2, Reason: "great", Summary: "summary", Tags: []string{"go"}}, vec(2, i, 1)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ai.ApplyCluster(ctx, id, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	type mailReq struct {
+		To      []string `json:"to"`
+		Subject string   `json:"subject"`
+		HTML    string   `json:"html"`
+		Text    string   `json:"text"`
+	}
+	var mails []mailReq
+	resendSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var mr mailReq
+		_ = json.NewDecoder(r.Body).Decode(&mr)
+		mails = append(mails, mr)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"re_test_1"}`))
+	}))
+	defer resendSrv.Close()
+
+	nlSvc := &newsletter.Service{
+		Store:    postgres.NewsletterRepo{DB: pool},
+		Mailer:   &resend.Client{APIKey: "test-key", From: "Horizon <test@example.com>", BaseURL: resendSrv.URL},
+		FrontURL: "https://horizon.example",
+	}
+	s := &Server{
+		Store:        postgres.ReadRepo{DB: pool},
+		Sources:      sources,
+		Newsletter:   nlSvc,
+		RequireAdmin: true,
+		AdminToken:   "nl-admin-secret",
+	}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	reqJSON := func(method, path, body, token string, want int) string {
+		t.Helper()
+		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Fatalf("%s %s -> %d want %d (%s)", method, path, resp.StatusCode, want, string(raw))
+		}
+		return string(raw)
+	}
+
+	// Double opt-in subscribe.
+	reqJSON("POST", "/api/newsletter/subscribe", `{"email":"Reader@Example.com"}`, "", 200)
+	if len(mails) != 1 || mails[0].To[0] != "reader@example.com" {
+		t.Fatalf("expected 1 confirmation mail, got %+v", mails)
+	}
+	confirmIdx := strings.Index(mails[0].Text, "/newsletter/confirm?token=")
+	if confirmIdx < 0 {
+		t.Fatalf("missing confirm URL in email: %s", mails[0].Text)
+	}
+	confirmTok := strings.Fields(mails[0].Text[confirmIdx+len("/newsletter/confirm?token="):])[0]
+
+	// Confirm activates subscriber.
+	reqJSON("POST", "/api/newsletter/confirm", fmt.Sprintf(`{"token":%q}`, confirmTok), "", 200)
+
+	// Protected send fails without admin token (401).
+	reqJSON("POST", "/api/newsletter/send", `{"dry_run":false}`, "", 401)
+
+	// Protected admin send delivers Top 7 edition with unsubscribe link.
+	out := reqJSON("POST", "/api/newsletter/send", `{"dry_run":false}`, "nl-admin-secret", 200)
+	var rep newsletter.SendReport
+	_ = json.Unmarshal([]byte(out), &rep)
+	if rep.ItemCount != 7 || rep.SentCount != 1 || len(mails) != 2 {
+		t.Fatalf("expected Top 7 and 1 sent email, rep=%+v mails=%d", rep, len(mails))
+	}
+	unsubIdx := strings.Index(mails[1].Text, "/newsletter/unsubscribe?token=")
+	if unsubIdx < 0 {
+		t.Fatalf("missing unsubscribe link in daily edition: %s", mails[1].Text)
+	}
+	unsubTok := strings.Fields(mails[1].Text[unsubIdx+len("/newsletter/unsubscribe?token="):])[0]
+
+	// Unsubscribe deactivates subscriber so next force dry-run reports 0 recipients.
+	reqJSON("POST", "/api/newsletter/unsubscribe", fmt.Sprintf(`{"token":%q}`, unsubTok), "", 200)
+	out2 := reqJSON("POST", "/api/newsletter/send", `{"dry_run":true}`, "nl-admin-secret", 200)
+	var rep2 newsletter.SendReport
+	_ = json.Unmarshal([]byte(out2), &rep2)
+	if rep2.RecipientCount != 0 {
+		t.Fatalf("expected 0 recipients after unsubscribe, got %+v", rep2)
 	}
 }

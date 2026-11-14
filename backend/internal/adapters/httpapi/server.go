@@ -133,7 +133,10 @@ type Server struct {
 	Login *Login
 	// Reset, when set, enables the "esqueci minha senha" e-mail.
 	Reset *PasswordReset
-	Log   *slog.Logger
+	// Newsletter enables public subscribe/confirm/unsubscribe and protected daily dispatch.
+	Newsletter        NewsletterService
+	NewsletterLimiter *LoginLimiter
+	Log               *slog.Logger
 
 	collecting  sync.Mutex
 	lastCollect time.Time // guarded by collecting
@@ -183,6 +186,12 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/feed/timeline", s.feedTimeline)
 		r.Get("/items/{id}", s.item)
 		r.Post("/items/{id}/vote", s.voteItem)
+		r.Post("/newsletter/subscribe", s.subscribeNewsletter)
+		r.Post("/newsletter/confirm", s.confirmNewsletter)
+		r.Get("/newsletter/confirm", s.confirmNewsletter)
+		r.Post("/newsletter/unsubscribe", s.unsubscribeNewsletter)
+		r.Get("/newsletter/unsubscribe", s.unsubscribeNewsletter)
+		r.Post("/newsletter/send", s.sendNewsletter)
 		r.Get("/digests", s.listDigests)
 		r.Post("/digests/generate", s.generateDigest)
 		r.Get("/digests/{date}", s.getDigest)

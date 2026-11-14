@@ -65,6 +65,7 @@ func (s *Server) authorized(tok string) bool {
 var publicWrites = map[string]bool{
 	"/api/auth/login": true, "/api/auth/logout": true,
 	"/api/auth/forgot": true, "/api/auth/reset": true,
+	"/api/newsletter/subscribe": true, "/api/newsletter/confirm": true, "/api/newsletter/unsubscribe": true,
 }
 
 func isPublicVotePath(p string) bool {

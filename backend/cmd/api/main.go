@@ -58,6 +58,7 @@ import (
 	"github.com/jpdev/horizon-go/internal/digest"
 	"github.com/jpdev/horizon-go/internal/domain"
 	"github.com/jpdev/horizon-go/internal/ingest"
+	"github.com/jpdev/horizon-go/internal/newsletter"
 	"github.com/jpdev/horizon-go/internal/opsalerts"
 	"github.com/jpdev/horizon-go/internal/retention"
 	"github.com/jpdev/horizon-go/internal/scheduler"
@@ -191,6 +192,43 @@ func resetFromEnv(lookup func(string) string) *httpapi.PasswordReset {
 	}
 }
 
+func newsletterFromEnv(lookup func(string) string, store newsletter.Store, log *slog.Logger) *newsletter.Service {
+	key := strings.TrimSpace(lookup("RESEND_API_KEY"))
+	from := strings.TrimSpace(lookup("NEWSLETTER_FROM"))
+	if from == "" {
+		from = strings.TrimSpace(lookup("RESET_FROM"))
+	}
+	if from == "" {
+		from = "Horizon <onboarding@resend.dev>"
+	}
+	front := strings.TrimSpace(lookup("FRONT_URL"))
+	if front == "" && !isProduction(lookup) {
+		front = "http://localhost:5173"
+	}
+	var mailer newsletter.Mailer
+	if key != "" && front != "" {
+		mailer = &resend.Client{APIKey: key, From: from}
+	}
+	return &newsletter.Service{
+		Store:    store,
+		Mailer:   mailer,
+		FrontURL: front,
+		Log:      log,
+	}
+}
+
+type newsletterSchedulerBridge struct{ svc *newsletter.Service }
+
+func (b newsletterSchedulerBridge) SendScheduled(ctx context.Context, slot time.Time) (scheduler.NewsletterOutcome, error) {
+	rep, err := b.svc.SendDaily(ctx, slot, false, false)
+	return scheduler.NewsletterOutcome{
+		ItemCount:  rep.ItemCount,
+		SentCount:  rep.SentCount,
+		Skipped:    rep.Skipped,
+		SkipReason: rep.SkipReason,
+	}, err
+}
+
 func opsAlertsFromEnv(lookup func(string) string, store opsalerts.Store, log *slog.Logger) *opsalerts.Service {
 	var mailer opsalerts.Mailer
 	if rc, to := mailerFromEnv(lookup); rc != nil {
@@ -263,6 +301,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		}
 	}
 	reset := resetFromEnv(os.Getenv)
+	newsletterSvc := newsletterFromEnv(os.Getenv, postgres.NewsletterRepo{DB: pool}, log)
 	voteSecret, err := voteHashSecret(os.Getenv, log)
 	if err != nil {
 		return err
@@ -302,7 +341,9 @@ func run(ctx context.Context, log *slog.Logger) error {
 		AdminToken:      strings.TrimSpace(os.Getenv("HORIZON_ADMIN_TOKEN")),
 		Login:           login,
 		Reset:           reset,
-		RequireAdmin:    isProduction(os.Getenv),
+		Newsletter:        newsletterSvc,
+		NewsletterLimiter: &httpapi.LoginLimiter{Max: 10, Window: 10 * time.Minute, MaxBlock: time.Hour},
+		RequireAdmin:      isProduction(os.Getenv),
 		Log:             log,
 	}
 	if schedEnabled {
@@ -335,6 +376,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 			Store:           schedRepo,
 			Collector:       srv,
 			Cleaner:         srv.Cleanup,
+			Newsletter:      newsletterSchedulerBridge{svc: newsletterSvc},
 			Alerter:         opsalerts.SchedulerBridge{Service: opsAlerts},
 			XIngest:         read,
 			CollectCooldown: srv.CollectCooldown,
