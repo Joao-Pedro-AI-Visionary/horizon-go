@@ -396,7 +396,7 @@ func newsArticleJSONLD(it domain.ItemDetail, site, canonical, ogImg, desc string
 		"name":          "Radar by JpDev",
 		"alternateName": "Horizon by JpDev",
 		"url":           site + "/",
-		"logo":          map[string]any{"@type": "ImageObject", "url": "https://github.com/Joao-Pedro-AI-Visionary.png"},
+		"logo":          map[string]any{"@type": "ImageObject", "url": "https://horizon-web-eight.vercel.app/icons/icon-512.png"},
 	}
 	published := ""
 	if it.PublishedAt != nil && !it.PublishedAt.IsZero() {

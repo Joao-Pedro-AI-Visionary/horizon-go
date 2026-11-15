@@ -33,17 +33,17 @@ var (
 	ogInitOnce sync.Once
 	ogFontBold *opentype.Font
 	ogFontReg  *opentype.Font
-	ogAvatar   image.Image
+	ogLogo     image.Image
 )
 
 func initOGAssets() {
 	ogInitOnce.Do(func() {
 		ogFontBold, _ = opentype.Parse(gobold.TTF)
 		ogFontReg, _ = opentype.Parse(goregular.TTF)
-		if raw, err := png.Decode(bytes.NewReader(assets.AvatarPNG)); err == nil {
-			scaled := image.NewRGBA(image.Rect(0, 0, 76, 76))
+		if raw, err := png.Decode(bytes.NewReader(assets.LogoPNG)); err == nil {
+			scaled := image.NewRGBA(image.Rect(0, 0, 80, 80))
 			xdraw.CatmullRom.Scale(scaled, scaled.Bounds(), raw, raw.Bounds(), draw.Over, nil)
-			ogAvatar = scaled
+			ogLogo = scaled
 		}
 	})
 }
@@ -108,30 +108,6 @@ func blendPixel(dst *image.RGBA, x, y int, c color.RGBA, a float64) {
 	})
 }
 
-func drawCircleImage(dst *image.RGBA, src image.Image, ox, oy int) {
-	b := src.Bounds()
-	w, h := b.Dx(), b.Dy()
-	cx, cy := float64(w)/2.0, float64(h)/2.0
-	rad := math.Min(cx, cy) - 1
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			dx := float64(x) + 0.5 - cx
-			dy := float64(y) + 0.5 - cy
-			d := math.Sqrt(dx*dx + dy*dy)
-			if d > rad+0.5 {
-				continue
-			}
-			r, g, bl, _ := src.At(b.Min.X+x, b.Min.Y+y).RGBA()
-			c := color.RGBA{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(bl >> 8), A: 255}
-			if d > rad-0.5 {
-				blendPixel(dst, ox+x, oy+y, c, rad+0.5-d)
-			} else {
-				dst.SetRGBA(ox+x, oy+y, c)
-			}
-		}
-	}
-}
-
 func drawText(dst *image.RGBA, face font.Face, col color.RGBA, x, y int, s string) {
 	if face == nil || s == "" {
 		return
@@ -189,26 +165,27 @@ func wrapLines(face font.Face, s string, maxWidthPx, maxLines int) []string {
 	return lines
 }
 
-// RenderItemOG renders a 1200x630 OpenGraph PNG card using the Horizon theme and Joao's real GitHub avatar.
+// RenderItemOG renders a 1200x630 OpenGraph PNG card using the Horizon theme and the official Radar icon.
 func RenderItemOG(it domain.ItemDetail) ([]byte, error) {
 	initOGAssets()
 	canvas := image.NewRGBA(image.Rect(0, 0, ogWidth, ogHeight))
 
-	bgSage := color.RGBA{238, 242, 238, 255}      // #eef2ee
-	border := color.RGBA{210, 222, 212, 255}      // subtle card border
-	white := color.RGBA{255, 255, 255, 255}       // #ffffff
-	ink := color.RGBA{18, 26, 20, 255}            // #121a14
-	muted := color.RGBA{78, 92, 82, 255}          // readable muted
-	accent := color.RGBA{39, 107, 67, 255}        // #276b43
-	tintBg := color.RGBA{226, 241, 231, 255}      // soft accent pill fill
+	bgSage := color.RGBA{238, 242, 238, 255} // #eef2ee
+	border := color.RGBA{210, 222, 212, 255} // subtle card border
+	white := color.RGBA{255, 255, 255, 255}  // #ffffff
+	ink := color.RGBA{18, 26, 20, 255}       // #121a14
+	muted := color.RGBA{78, 92, 82, 255}     // readable muted
+	accent := color.RGBA{39, 107, 67, 255}   // #276b43
+	tintBg := color.RGBA{226, 241, 231, 255} // soft accent pill fill
 
 	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(bgSage), image.Point{}, draw.Src)
 	fillRoundedRect(canvas, image.Rect(48, 42, ogWidth-48, ogHeight-42), 34, border)
 	fillRoundedRect(canvas, image.Rect(50, 44, ogWidth-50, ogHeight-44), 32, white)
 
-	// Header: real GitHub avatar + "Radar by JpDev" badge + AI score pill.
-	if ogAvatar != nil {
-		drawCircleImage(canvas, ogAvatar, 96, 88)
+	// Header: official Radar icon (already a rounded square; do not circle-crop) + brand + score pill.
+	if ogLogo != nil {
+		b := ogLogo.Bounds()
+		draw.Draw(canvas, image.Rect(96, 88, 96+b.Dx(), 88+b.Dy()), ogLogo, b.Min, draw.Over)
 	}
 	brandFace := makeFace(ogFontBold, 26)
 	subFace := makeFace(ogFontReg, 20)
