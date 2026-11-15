@@ -72,6 +72,13 @@ type CleanupRunner interface {
 	Cleanup(ctx context.Context, dryRun bool) (retention.Report, error)
 }
 
+// Translations reads the pt-BR backfill counters and asks the worker (which
+// owns the model) for a sweep.
+type Translations interface {
+	TranslationStatus(ctx context.Context) (domain.TranslationStatus, error)
+	RequestTranslation(ctx context.Context, limit int) error
+}
+
 // VoteStore persists anonymous per-device item votes and short-lived IP rate limits.
 type VoteStore interface {
 	Vote(ctx context.Context, itemID int64, deviceHash string, vote int) (domain.VoteResult, error)
@@ -99,6 +106,8 @@ type Server struct {
 	AlertTester AlertTester
 	// Cleanup, when set, enables POST /api/pipeline/cleanup (admin only).
 	Cleanup CleanupRunner
+	// Translations, when set, enables GET/POST /api/pipeline/translate (admin only).
+	Translations Translations
 	// Votes, when set, enables anonymous per-device voting (POST /api/items/{id}/vote).
 	Votes          VoteStore
 	VoteHashSecret []byte
@@ -222,6 +231,8 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/metrics", s.metrics)
 		r.Post("/pipeline/run", s.runPipeline)
 		r.Post("/pipeline/cleanup", s.cleanupPipeline)
+		r.Get("/pipeline/translate", s.translationStatus)
+		r.Post("/pipeline/translate", s.requestTranslation)
 		r.Post("/items/ingest", s.ingestItems)
 		r.Get("/admin/alerts", s.adminAlerts)
 		r.Post("/admin/alerts/test", s.adminAlertTest)
