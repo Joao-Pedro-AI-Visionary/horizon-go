@@ -27,6 +27,9 @@ import (
 const (
 	ogWidth  = 1200
 	ogHeight = 630
+
+	// ogFooter is the brand seal drawn at the bottom of every OG card.
+	ogFooter = "Radar by JpDev · horizon-web-eight.vercel.app"
 )
 
 var (
@@ -249,7 +252,7 @@ func RenderItemOG(it domain.ItemDetail) ([]byte, error) {
 
 	// Bottom accent rule + seal.
 	fillRoundedRect(canvas, image.Rect(96, ogHeight-92, 240, ogHeight-86), 3, accent)
-	drawText(canvas, subFace, accent, 256, ogHeight-82, "Resumo e discussão curada · horariodebrasilia")
+	drawText(canvas, subFace, accent, 256, ogHeight-82, ogFooter)
 
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, canvas); err != nil {
