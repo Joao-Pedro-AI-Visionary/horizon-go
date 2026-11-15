@@ -57,6 +57,7 @@ import (
 	"github.com/jpdev/horizon-go/internal/config"
 	"github.com/jpdev/horizon-go/internal/digest"
 	"github.com/jpdev/horizon-go/internal/domain"
+	"github.com/jpdev/horizon-go/internal/enrich"
 	"github.com/jpdev/horizon-go/internal/ingest"
 	"github.com/jpdev/horizon-go/internal/newsletter"
 	"github.com/jpdev/horizon-go/internal/opsalerts"
@@ -329,6 +330,8 @@ func run(ctx context.Context, log *slog.Logger) error {
 			Log:       log,
 		},
 		Pusher: &ingest.Pusher{Sources: sources, Items: postgres.ItemRepo{DB: pool}, Publisher: bus},
+		// The worker owns the model: the API only reads counters and queues sweeps.
+		Translations: enrich.TranslationQueue{Repo: postgres.AIRepo{DB: pool}, Bus: bus},
 		ValidateSource: func(c domain.SourceConfig) error {
 			_, err := source.Build(c, nil, source.BaseURLs{})
 			return err

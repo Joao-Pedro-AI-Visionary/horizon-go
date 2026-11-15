@@ -57,6 +57,9 @@ type aiOptions struct {
 	dedupWindow time.Duration
 	th          domain.Thresholds
 	timeout     time.Duration
+	translate   bool
+	transBatch  int
+	transEvery  time.Duration
 }
 
 func main() {
@@ -74,6 +77,9 @@ func main() {
 	flag.Float64Var(&o.th.Duplicate, "dup-threshold", domain.DefaultThresholds.Duplicate, "cosine similarity for a direct duplicate")
 	flag.Float64Var(&o.th.Ambiguous, "ambiguous-threshold", domain.DefaultThresholds.Ambiguous, "cosine similarity from which the LLM decides")
 	flag.DurationVar(&o.timeout, "ai-timeout", 2*time.Hour, "with --once: bound for the scoring and dedup stages")
+	flag.BoolVar(&o.translate, "translate", envBool("TRANSLATE_ENABLED", true), "run the pt-BR translation backfill (env TRANSLATE_ENABLED)")
+	flag.IntVar(&o.transBatch, "translate-batch", envInt("TRANSLATE_BATCH", enrich.DefaultTranslateBatch), "items per translation sweep (env TRANSLATE_BATCH)")
+	flag.DurationVar(&o.transEvery, "translate-every", envDuration("TRANSLATE_EVERY", enrich.DefaultBackfillEvery), "period of the translation sweep (env TRANSLATE_EVERY)")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -100,6 +106,13 @@ func envDuration(k string, def time.Duration) time.Duration {
 	return def
 }
 
+func envBool(k string, def bool) bool {
+	if b, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(k))); err == nil {
+		return b
+	}
+	return def
+}
+
 func envInt(k string, def int) int {
 	if v, err := strconv.Atoi(os.Getenv(k)); err == nil && v > 0 {
 		return v
@@ -112,6 +125,9 @@ type aiStages struct {
 	deduper    *enrich.Deduper
 	rawCons    jetstream.Consumer
 	scoredCons jetstream.Consumer
+	// translator is nil with --translate=false.
+	translator *enrich.Translator
+	transCons  jetstream.Consumer
 }
 
 func newAIStages(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, bus *natsbus.Bus, o aiOptions) (*aiStages, error) {
@@ -142,12 +158,22 @@ func newAIStages(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, bus 
 	}
 	log.Info("ai stages ready", "llm", an.LLM.Model(), "embedder", embName, "workers", o.workers,
 		"dup", o.th.Duplicate, "ambiguous", o.th.Ambiguous, "window", o.dedupWindow)
-	return &aiStages{
+	st := &aiStages{
 		scorer:     &enrich.Scorer{Repo: repo, Analyzer: an, Bus: bus, Workers: o.workers, Log: log},
 		deduper:    &enrich.Deduper{Repo: repo, Analyzer: an, Bus: bus, Thresholds: o.th, Window: o.dedupWindow, Log: log},
 		rawCons:    rawCons,
 		scoredCons: scoredCons,
-	}, nil
+	}
+	if o.translate {
+		// Same Analyzer, hence the same LLM client and LLM_RPM limiter as the
+		// scorer: the backfill never adds a second request budget.
+		if st.transCons, err = bus.Consumer(ctx, enrich.TranslatorDurable, bus.TranslateSubject(), enrich.AckWait); err != nil {
+			return nil, err
+		}
+		st.translator = &enrich.Translator{Repo: repo, Model: an, Batch: o.transBatch, BackfillEvery: o.transEvery, Log: log}
+		log.Info("translation backfill ready", "batch", o.transBatch, "every", o.transEvery)
+	}
+	return st, nil
 }
 
 func run(ctx context.Context, log *slog.Logger, once, seed bool, window, timeout, interval time.Duration, withDigest bool, o aiOptions) error {
@@ -217,8 +243,12 @@ func run(ctx context.Context, log *slog.Logger, once, seed bool, window, timeout
 		serr := ai.scorer.Drain(actx, ai.rawCons)
 		scoredIn := time.Since(start)
 		derr := ai.deduper.Drain(actx, ai.scoredCons)
+		var terr error
+		if ai.translator != nil {
+			terr = ai.translator.Drain(actx, ai.transCons)
+		}
 		printAIReport(ctx, pool, ai, scoredIn, time.Since(start))
-		return errors.Join(serr, derr)
+		return errors.Join(serr, derr, terr)
 	}
 
 	go func() {
@@ -237,6 +267,13 @@ func run(ctx context.Context, log *slog.Logger, once, seed bool, window, timeout
 				log.Error("deduper stopped", "err", err)
 			}
 		}()
+		if ai.translator != nil {
+			go func() {
+				if err := ai.translator.Run(ctx, ai.transCons); err != nil {
+					log.Error("translator stopped", "err", err)
+				}
+			}()
+		}
 	}
 	if withDigest {
 		read := postgres.ReadRepo{DB: pool}
@@ -340,6 +377,10 @@ func printAIReport(ctx context.Context, pool *pgxpool.Pool, ai *aiStages, scored
 	d := ai.deduper.Stats
 	fmt.Printf("deduper: processed=%d new_clusters=%d joined=%d direct=%d llm_asked=%d llm_confirmed=%d skipped=%d failed=%d (total %s)\n",
 		d.Processed, d.NewClusters, d.Joined, d.Direct, d.AskedLLM, d.Confirmed, d.Skipped, d.Failed, total.Round(time.Second))
+	if t := ai.translator; t != nil {
+		fmt.Printf("translator: translated=%d copied=%d skipped=%d failed=%d\n",
+			t.Stats.Translated.Load(), t.Stats.Copied.Load(), t.Stats.Skipped.Load(), t.Stats.Failed.Load())
+	}
 
 	printQuery(ctx, pool, "items by status (status | n):",
 		`SELECT status, count(*) FROM items GROUP BY status ORDER BY status`)
