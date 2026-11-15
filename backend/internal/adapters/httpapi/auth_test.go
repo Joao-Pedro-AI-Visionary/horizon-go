@@ -107,7 +107,7 @@ func TestReadsStayPublic(t *testing.T) {
 	for _, p := range []string{
 		"/api/feed", "/api/feed/timeline", "/api/auth", "/api/digests",
 		"/api/items/1", "/api/sitemap.xml", "/api/rss/feed.xml", "/api/llms.txt",
-		"/healthz",
+		"/api/stats", "/healthz",
 	} {
 		if rec := doAuth(h, http.MethodGet, p, "", ""); rec.Code == http.StatusUnauthorized || rec.Code == http.StatusServiceUnavailable {
 			t.Errorf("GET %s: got %d", p, rec.Code)
@@ -138,7 +138,7 @@ func TestPublicReadPathAllowlist(t *testing.T) {
 		"/api/items/42", "/api/og/items/42.png", "/api/sitemap.xml",
 		"/api/rss/feed.xml", "/api/rss/digests.xml", "/api/llms.txt",
 		"/api/llms-full.txt", "/api/digests", "/api/digests/2026-11-14",
-		"/api/newsletter/confirm", "/api/newsletter/unsubscribe",
+		"/api/newsletter/confirm", "/api/newsletter/unsubscribe", "/api/stats",
 	}
 	for _, p := range public {
 		if !isPublicReadPath(p) {

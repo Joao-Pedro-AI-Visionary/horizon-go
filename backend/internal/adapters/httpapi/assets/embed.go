@@ -2,6 +2,7 @@ package assets
 
 import _ "embed"
 
-// AvatarPNG is Joao's real GitHub avatar converted losslessly from public/jpdev-avatar.webp.
-//go:embed jpdev-avatar.png
-var AvatarPNG []byte
+// LogoPNG is the official Radar by JpDev app icon used on Open Graph cards.
+//
+//go:embed jpdev-logo.png
+var LogoPNG []byte

@@ -312,6 +312,32 @@ func (s *Server) listSources(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"sources": out})
 }
 
+// publicStats is the anonymous snapshot of feed metadata: how many sources
+// are active and the digest score cutoff. It never returns URLs or config.
+func (s *Server) publicStats(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.Store.ListSourceStatus(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	enabled := 0
+	for _, row := range rows {
+		if row.Enabled {
+			enabled++
+		}
+	}
+	st, err := s.Store.GetSettings(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sources_enabled": enabled,
+		"sources_total":   len(rows),
+		"score_threshold": st.ScoreThreshold,
+	})
+}
+
 // sourceInput is the body of POST (all required but enabled) and PATCH
 // (all optional) /api/sources.
 type sourceInput struct {

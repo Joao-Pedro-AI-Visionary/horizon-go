@@ -211,6 +211,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/digests", s.listDigests)
 		r.Post("/digests/generate", s.generateDigest)
 		r.Get("/digests/{date}", s.getDigest)
+		r.Get("/stats", s.publicStats)
 		r.Get("/sources", s.listSources)
 		r.Post("/sources", s.createSource)
 		r.Patch("/sources/{id}", s.patchSource)

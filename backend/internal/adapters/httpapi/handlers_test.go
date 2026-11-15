@@ -25,6 +25,7 @@ type fakeStore struct {
 	lastQuery domain.FeedQuery
 	lastDays  int
 	settings  domain.Settings
+	sources   []postgres.SourceStatus
 	feedErr   error
 	pingErr   error
 }
@@ -54,7 +55,7 @@ func (f *fakeStore) GetDigest(_ context.Context, date, _ string) (domain.Digest,
 	return domain.Digest{}, postgres.ErrNotFound
 }
 func (f *fakeStore) ListSourceStatus(context.Context) ([]postgres.SourceStatus, error) {
-	return nil, nil
+	return f.sources, nil
 }
 func (f *fakeStore) GetSettings(context.Context) (domain.Settings, error) { return f.settings, nil }
 func (f *fakeStore) PutSettings(_ context.Context, s domain.Settings) (domain.Settings, error) {
@@ -375,5 +376,44 @@ func TestRunScheduledCollectRespectsLocksCooldownAndOnCollect(t *testing.T) {
 	}
 	if cc.n != 3 || hooked != 2 {
 		t.Fatalf("expected cc=3 and hooked=2 (only full pipeline runs), got cc=%d hooked=%d", cc.n, hooked)
+	}
+}
+
+func TestPublicStatsReturnsAggregatesOnly(t *testing.T) {
+	fs := &fakeStore{
+		settings: domain.Settings{ScoreThreshold: 7},
+		sources: []postgres.SourceStatus{
+			{SourceConfig: domain.SourceConfig{ID: 1, Name: "A", Enabled: true, Config: json.RawMessage(`{"url":"https://secret.example/feed"}`)}},
+			{SourceConfig: domain.SourceConfig{ID: 2, Name: "B", Enabled: false, Config: json.RawMessage(`{"url":"https://other.example/rss"}`)}},
+		},
+	}
+	s := &Server{Store: fs, RequireAdmin: true, AdminToken: "tok"}
+	h := s.Handler()
+	rec := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, rec)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/stats: got %d %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "secret.example") || strings.Contains(body, "other.example") || strings.Contains(body, `"config"`) || strings.Contains(body, `"name"`) {
+		t.Fatalf("public stats leaked source details: %s", body)
+	}
+	var out struct {
+		SourcesEnabled int     `json:"sources_enabled"`
+		SourcesTotal   int     `json:"sources_total"`
+		ScoreThreshold float64 `json:"score_threshold"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("json: %v %s", err, body)
+	}
+	if out.SourcesEnabled != 1 || out.SourcesTotal != 2 || out.ScoreThreshold != 7 {
+		t.Fatalf("got %+v want enabled=1 total=2 threshold=7", out)
+	}
+
+	priv := httptest.NewRecorder()
+	h.ServeHTTP(priv, httptest.NewRequest(http.MethodGet, "/api/sources", nil))
+	if priv.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /api/sources still must be 401, got %d %s", priv.Code, priv.Body.String())
 	}
 }

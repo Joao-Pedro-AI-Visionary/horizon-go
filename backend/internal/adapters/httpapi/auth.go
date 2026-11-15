@@ -92,7 +92,8 @@ func isPublicReadPath(path string) bool {
 		"/api/rss/feed.xml", "/api/rss/digests.xml",
 		"/api/llms.txt", "/api/llms-full.txt",
 		"/api/digests",
-		"/api/newsletter/confirm", "/api/newsletter/unsubscribe":
+		"/api/newsletter/confirm", "/api/newsletter/unsubscribe",
+		"/api/stats":
 		return true
 	}
 	if strings.HasPrefix(path, "/api/og/") {
