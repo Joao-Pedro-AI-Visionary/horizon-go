@@ -406,7 +406,7 @@ func renderEditionEmail(dateStr, frontURL string, items []domain.FeedItem, unsub
 		if origURL == "" {
 			origURL = itemLink
 		}
-		summary := strings.TrimSpace(it.Summary)
+		summary := strings.TrimSpace(it.DisplaySummary())
 		if summary == "" {
 			summary = strings.TrimSpace(it.ScoreReason)
 		}
@@ -414,14 +414,14 @@ func renderEditionEmail(dateStr, frontURL string, items []domain.FeedItem, unsub
   <div style="padding:14px 0;border-top:1px solid #e4ebe5;">
     <p style="margin:0 0 4px;font-size:12px;color:#5a695e;">#%d · %s · <strong>Nota %.1f/10</strong></p>
     <p style="margin:0 0 6px;font-size:16px;font-weight:700;line-height:1.35;"><a href="%s" style="color:#121a14;text-decoration:none;">%s</a></p>`,
-			i+1, html.EscapeString(it.SourceName), it.Score, html.EscapeString(itemLink), html.EscapeString(it.Title))
+			i+1, html.EscapeString(it.SourceName), it.Score, html.EscapeString(itemLink), html.EscapeString(it.DisplayTitle()))
 		if summary != "" {
 			fmt.Fprintf(&hb, `<p style="margin:0 0 6px;font-size:14px;line-height:1.5;color:#415045;">%s</p>`, html.EscapeString(summary))
 		}
 		fmt.Fprintf(&hb, `<p style="margin:0;font-size:12px;"><a href="%s" style="color:#276b43;text-decoration:none;">Ler no Horizon</a> · <a href="%s" style="color:#5a695e;">Original</a></p></div>`,
 			html.EscapeString(itemLink), html.EscapeString(origURL))
 
-		fmt.Fprintf(&tb, "%d. [%s · %.1f/10] %s\n", i+1, it.SourceName, it.Score, it.Title)
+		fmt.Fprintf(&tb, "%d. [%s · %.1f/10] %s\n", i+1, it.SourceName, it.Score, it.DisplayTitle())
 		if summary != "" {
 			fmt.Fprintf(&tb, "   %s\n", summary)
 		}

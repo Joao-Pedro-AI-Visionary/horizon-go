@@ -3,6 +3,7 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -16,6 +17,8 @@ type FeedItem struct {
 	Title          string     `json:"title"`
 	URL            string     `json:"url"`
 	Summary        string     `json:"summary"`
+	TitlePT        string     `json:"title_pt"`
+	SummaryPT      string     `json:"summary_pt"`
 	ScoreReason    string     `json:"score_reason"`
 	Score          float64    `json:"score"`
 	Tags           []string   `json:"tags"`
@@ -25,6 +28,20 @@ type FeedItem struct {
 	ProjectedAt    time.Time  `json:"projected_at"`
 	Likes          int        `json:"likes"`
 	UserVote       int        `json:"user_vote"`
+}
+
+// DisplayTitle is the pt-BR title, or the original when there is none.
+func (f FeedItem) DisplayTitle() string { return preferPT(f.TitlePT, f.Title) }
+
+// DisplaySummary is the pt-BR summary, or the original when there is none.
+func (f FeedItem) DisplaySummary() string { return preferPT(f.SummaryPT, f.Summary) }
+
+// preferPT returns pt unless it is blank.
+func preferPT(pt, original string) string {
+	if strings.TrimSpace(pt) != "" {
+		return pt
+	}
+	return original
 }
 
 // EventTime is published_at, or projected_at when the source gave no date.
@@ -115,6 +132,8 @@ type ItemDetail struct {
 	Score       *float64      `json:"score"`
 	ScoreReason string        `json:"score_reason"`
 	Summary     string        `json:"summary"`
+	TitlePT     string        `json:"title_pt"`
+	SummaryPT   string        `json:"summary_pt"`
 	Tags        []string      `json:"tags"`
 	PublishedAt *time.Time    `json:"published_at"`
 	FetchedAt   time.Time     `json:"fetched_at"`
@@ -126,6 +145,12 @@ type ItemDetail struct {
 	Cluster     *ClusterInfo  `json:"cluster"`
 	Duplicates  []RelatedItem `json:"duplicates"`
 }
+
+// DisplayTitle is the pt-BR title, or the original when there is none.
+func (d ItemDetail) DisplayTitle() string { return preferPT(d.TitlePT, d.Title) }
+
+// DisplaySummary is the pt-BR summary, or the original when there is none.
+func (d ItemDetail) DisplaySummary() string { return preferPT(d.SummaryPT, d.Summary) }
 
 // Settings are the runtime knobs edited from the dashboard.
 type Settings struct {
