@@ -18,11 +18,11 @@ type ReadRepo struct{ DB *pgxpool.Pool }
 // Ping checks the connection.
 func (r ReadRepo) Ping(ctx context.Context) error { return r.DB.Ping(ctx) }
 
-const feedCols = `item_id, source_id, source_kind, source_name, title, url, summary, score_reason, score, tags, published_at, cluster_id, duplicate_count, projected_at, likes_count`
+const feedCols = `item_id, source_id, source_kind, source_name, title, url, summary, COALESCE(title_pt, ''), COALESCE(summary_pt, ''), score_reason, score, tags, published_at, cluster_id, duplicate_count, projected_at, likes_count`
 
 func scanFeedWithVote(row pgx.CollectableRow) (domain.FeedItem, error) {
 	var f domain.FeedItem
-	err := row.Scan(&f.ItemID, &f.SourceID, &f.SourceKind, &f.SourceName, &f.Title, &f.URL, &f.Summary, &f.ScoreReason,
+	err := row.Scan(&f.ItemID, &f.SourceID, &f.SourceKind, &f.SourceName, &f.Title, &f.URL, &f.Summary, &f.TitlePT, &f.SummaryPT, &f.ScoreReason,
 		&f.Score, &f.Tags, &f.PublishedAt, &f.ClusterID, &f.DuplicateCount, &f.ProjectedAt, &f.Likes, &f.UserVote)
 	if f.Tags == nil {
 		f.Tags = []string{}
@@ -32,7 +32,7 @@ func scanFeedWithVote(row pgx.CollectableRow) (domain.FeedItem, error) {
 
 func scanFeed(row pgx.CollectableRow) (domain.FeedItem, error) {
 	var f domain.FeedItem
-	err := row.Scan(&f.ItemID, &f.SourceID, &f.SourceKind, &f.SourceName, &f.Title, &f.URL, &f.Summary, &f.ScoreReason,
+	err := row.Scan(&f.ItemID, &f.SourceID, &f.SourceKind, &f.SourceName, &f.Title, &f.URL, &f.Summary, &f.TitlePT, &f.SummaryPT, &f.ScoreReason,
 		&f.Score, &f.Tags, &f.PublishedAt, &f.ClusterID, &f.DuplicateCount, &f.ProjectedAt, &f.Likes)
 	if f.Tags == nil {
 		f.Tags = []string{}
@@ -63,7 +63,7 @@ func feedFilter(q domain.FeedQuery, withTime bool) ([]string, []any) {
 	}
 	if q.Q != "" {
 		like := "%" + strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(q.Q) + "%"
-		add("(title ILIKE $%[1]d OR summary ILIKE $%[1]d)", like)
+		add("(title ILIKE $%[1]d OR summary ILIKE $%[1]d OR title_pt ILIKE $%[1]d OR summary_pt ILIKE $%[1]d)", like)
 	}
 	if withTime && !q.From.IsZero() {
 		add("COALESCE(published_at, projected_at) >= $%d", q.From)
@@ -193,12 +193,12 @@ func (r ReadRepo) Item(ctx context.Context, id int64) (domain.ItemDetail, error)
 	var clusterCount *int
 	err := r.DB.QueryRow(ctx, `
 SELECT i.id, i.source_id, s.kind, s.name, i.title, i.url, i.author, i.content, i.status, i.score,
-       COALESCE(i.score_reason, ''), COALESCE(i.summary, ''), i.tags, i.published_at, i.fetched_at, i.scored_at, i.last_error,
+       COALESCE(i.score_reason, ''), COALESCE(i.summary, ''), COALESCE(i.title_pt, ''), COALESCE(i.summary_pt, ''), i.tags, i.published_at, i.fetched_at, i.scored_at, i.last_error,
        i.cluster_id, c.title, c.item_count, c.representative_item_id,
        COALESCE((SELECT count(*)::int FROM item_votes v WHERE v.item_id = i.id AND v.vote = 1), 0)
 FROM items i JOIN sources s ON s.id = i.source_id LEFT JOIN clusters c ON c.id = i.cluster_id
 WHERE i.id = $1`, id).Scan(&d.ID, &d.SourceID, &d.SourceKind, &d.SourceName, &d.Title, &d.URL, &d.Author, &d.Content,
-		&d.Status, &d.Score, &d.ScoreReason, &d.Summary, &d.Tags, &d.PublishedAt, &d.FetchedAt, &d.ScoredAt, &d.LastError,
+		&d.Status, &d.Score, &d.ScoreReason, &d.Summary, &d.TitlePT, &d.SummaryPT, &d.Tags, &d.PublishedAt, &d.FetchedAt, &d.ScoredAt, &d.LastError,
 		&clusterID, &clusterTitle, &clusterCount, &repID, &d.Likes)
 	if err != nil {
 		return d, mapErr(err)

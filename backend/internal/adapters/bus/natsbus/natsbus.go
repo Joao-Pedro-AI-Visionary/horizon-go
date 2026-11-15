@@ -234,6 +234,29 @@ func (b *Bus) PublishDeduped(ctx context.Context, ev ItemEvent) error {
 	return b.publishEvent(ctx, b.DedupedSubject(), fmt.Sprintf("deduped:%d:%d", ev.ItemID, ev.ClusterID), ev)
 }
 
+// TranslateSubject carries requests for a pt-BR translation sweep (POST
+// /api/pipeline/translate). The worker owns the model, so the API only asks.
+func (b *Bus) TranslateSubject() string { return b.prefix + ".translate" }
+
+// TranslateRequest is the payload of items.translate. Limit 0 means the
+// worker's default batch.
+type TranslateRequest struct {
+	Limit int `json:"limit,omitempty"`
+}
+
+// PublishTranslate asks the worker for one translation sweep.
+func (b *Bus) PublishTranslate(ctx context.Context, req TranslateRequest) error {
+	data, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	msgID := fmt.Sprintf("translate:%d", time.Now().UnixNano())
+	if _, err := b.js.Publish(ctx, b.TranslateSubject(), data, jetstream.WithMsgID(msgID)); err != nil {
+		return fmt.Errorf("publish %s: %w", b.TranslateSubject(), err)
+	}
+	return nil
+}
+
 // Consumer creates or updates a durable pull consumer on subject. ackWait
 // must cover the slowest handler (a cold model load takes about a minute).
 func (b *Bus) Consumer(ctx context.Context, durable, subject string, ackWait time.Duration) (jetstream.Consumer, error) {

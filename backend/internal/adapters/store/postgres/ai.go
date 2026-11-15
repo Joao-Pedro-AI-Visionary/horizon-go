@@ -343,8 +343,8 @@ WHERE c.id = $1`, target, primary.ItemID, len(members)); err != nil {
 		}
 		// CQRS read model: one row per cluster, the primary item.
 		if _, err := tx.Exec(ctx, `
-INSERT INTO feed_view (item_id, source_id, source_kind, source_name, title, url, summary, score_reason, score, tags, published_at, cluster_id, duplicate_count, projected_at, likes_count, dislikes_count)
-SELECT i.id, s.id, s.kind, s.name, i.title, i.url, COALESCE(i.summary, ''), COALESCE(i.score_reason, ''), i.score, i.tags, i.published_at, c.id, c.item_count - 1, now(),
+INSERT INTO feed_view (item_id, source_id, source_kind, source_name, title, url, summary, title_pt, summary_pt, score_reason, score, tags, published_at, cluster_id, duplicate_count, projected_at, likes_count, dislikes_count)
+SELECT i.id, s.id, s.kind, s.name, i.title, i.url, COALESCE(i.summary, ''), i.title_pt, i.summary_pt, COALESCE(i.score_reason, ''), i.score, i.tags, i.published_at, c.id, c.item_count - 1, now(),
        COALESCE((SELECT count(*)::int FROM item_votes v WHERE v.item_id = i.id AND v.vote = 1), 0),
        COALESCE((SELECT count(*)::int FROM item_votes v WHERE v.item_id = i.id AND v.vote = -1), 0)
 FROM clusters c JOIN items i ON i.id = c.representative_item_id JOIN sources s ON s.id = i.source_id

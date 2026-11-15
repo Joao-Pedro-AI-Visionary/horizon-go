@@ -143,13 +143,13 @@ func (s *Server) rssFeed(w http.ResponseWriter, r *http.Request) {
 			when = *it.PublishedAt
 		}
 		itemURL := fmt.Sprintf("%s/items/%d", site, it.ItemID)
-		desc := strings.TrimSpace(it.Summary)
+		desc := strings.TrimSpace(it.DisplaySummary())
 		if desc == "" {
 			desc = strings.TrimSpace(it.ScoreReason)
 		}
 		desc = fmt.Sprintf("[%s · Nota %.1f/10] %s", it.SourceName, it.Score, desc)
 		items = append(items, rssItem{
-			Title:       it.Title,
+			Title:       it.DisplayTitle(),
 			Link:        itemURL,
 			GUID:        rssGUID{IsPermaLink: "true", Value: itemURL},
 			PubDate:     when.UTC().Format(time.RFC1123Z),
@@ -357,12 +357,12 @@ func (s *Server) llmsFullTxt(w http.ResponseWriter, r *http.Request) {
 		page, err := s.Store.Feed(r.Context(), domain.FeedQuery{Sort: "recent", Page: 1, PageSize: 20})
 		if err == nil {
 			for _, it := range page.Items {
-				title := mdLinkText(it.Title)
+				title := mdLinkText(it.DisplayTitle())
 				if title == "" {
 					continue
 				}
 				link := fmt.Sprintf("%s/items/%d", strings.TrimRight(site, "/"), it.ItemID)
-				if summary := oneLineSummary(it.Summary); summary != "" {
+				if summary := oneLineSummary(it.DisplaySummary()); summary != "" {
 					fmt.Fprintf(&b, "- [%s](%s): %s\n", title, link, summary)
 				} else {
 					fmt.Fprintf(&b, "- [%s](%s)\n", title, link)
@@ -413,7 +413,7 @@ func newsArticleJSONLD(it domain.ItemDetail, site, canonical, ogImg, desc string
 	ld := map[string]any{
 		"@context":         "https://schema.org",
 		"@type":            "NewsArticle",
-		"headline":         it.Title,
+		"headline":         it.DisplayTitle(),
 		"description":      desc,
 		"inLanguage":       "pt-BR",
 		"url":              canonical,
@@ -457,7 +457,7 @@ func (s *Server) itemPublicHTML(w http.ResponseWriter, r *http.Request) {
 	apiBase := s.apiBase(r)
 	canonical := fmt.Sprintf("%s/items/%d", site, it.ID)
 	ogImg := fmt.Sprintf("%s/api/og/items/%d.png", apiBase, it.ID)
-	desc := strings.TrimSpace(it.Summary)
+	desc := strings.TrimSpace(it.DisplaySummary())
 	if desc == "" {
 		desc = strings.TrimSpace(it.ScoreReason)
 	}
@@ -467,7 +467,7 @@ func (s *Server) itemPublicHTML(w http.ResponseWriter, r *http.Request) {
 	if rs := []rune(desc); len(rs) > 160 {
 		desc = strings.TrimSpace(string(rs[:157])) + "…"
 	}
-	title := it.Title + " · Radar by JpDev"
+	title := it.DisplayTitle() + " · Radar by JpDev"
 	scoreText := ""
 	if it.Score != nil {
 		scoreText = fmt.Sprintf(" · Nota %.1f/10", *it.Score)
@@ -513,7 +513,7 @@ func (s *Server) itemPublicHTML(w http.ResponseWriter, r *http.Request) {
 		html.EscapeString(title),
 		html.EscapeString(desc),
 		html.EscapeString(canonical),
-		html.EscapeString(it.Title),
+		html.EscapeString(it.DisplayTitle()),
 		html.EscapeString(ogImg),
 		html.EscapeString(scoreText),
 		linkHTML,

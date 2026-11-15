@@ -27,6 +27,9 @@ import (
 const (
 	ogWidth  = 1200
 	ogHeight = 630
+
+	// ogFooter is the brand seal drawn at the bottom of every OG card.
+	ogFooter = "Radar by JpDev · horizon-web-eight.vercel.app"
 )
 
 var (
@@ -165,6 +168,17 @@ func wrapLines(face font.Face, s string, maxWidthPx, maxLines int) []string {
 	return lines
 }
 
+// ogCopy is the title and summary drawn on the card: the pt-BR copy when the
+// item has one, else the original; an empty summary falls back to the score
+// reason.
+func ogCopy(it domain.ItemDetail) (title, summary string) {
+	summary = strings.TrimSpace(it.DisplaySummary())
+	if summary == "" {
+		summary = strings.TrimSpace(it.ScoreReason)
+	}
+	return it.DisplayTitle(), summary
+}
+
 // RenderItemOG renders a 1200x630 OpenGraph PNG card using the Horizon theme and the official Radar icon.
 func RenderItemOG(it domain.ItemDetail) ([]byte, error) {
 	initOGAssets()
@@ -222,8 +236,9 @@ func RenderItemOG(it domain.ItemDetail) ([]byte, error) {
 	fillRoundedRect(canvas, image.Rect(ogWidth-96-pillW, 92, ogWidth-96, 154), 30, tintBg)
 	drawText(canvas, brandFace, accent, ogWidth-96-pillW+24, 132, scoreText)
 
-	// Main title (word-wrapped up to 4 lines).
-	lines := wrapLines(titleFace, it.Title, ogWidth-192, 4)
+	// Main title (word-wrapped up to 4 lines), pt-BR when translated.
+	title, summary := ogCopy(it)
+	lines := wrapLines(titleFace, title, ogWidth-192, 4)
 	y := 246
 	for _, ln := range lines {
 		drawText(canvas, titleFace, ink, 96, y, ln)
@@ -231,10 +246,6 @@ func RenderItemOG(it domain.ItemDetail) ([]byte, error) {
 	}
 
 	// Summary excerpt if space permits.
-	summary := strings.TrimSpace(it.Summary)
-	if summary == "" {
-		summary = strings.TrimSpace(it.ScoreReason)
-	}
 	if summary != "" && y < 480 {
 		sumLines := wrapLines(bodyFace, summary, ogWidth-192, 2)
 		sy := max(y+14, 460)
@@ -249,7 +260,7 @@ func RenderItemOG(it domain.ItemDetail) ([]byte, error) {
 
 	// Bottom accent rule + seal.
 	fillRoundedRect(canvas, image.Rect(96, ogHeight-92, 240, ogHeight-86), 3, accent)
-	drawText(canvas, subFace, accent, 256, ogHeight-82, "Resumo e discussão curada · horariodebrasilia")
+	drawText(canvas, subFace, accent, 256, ogHeight-82, ogFooter)
 
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, canvas); err != nil {

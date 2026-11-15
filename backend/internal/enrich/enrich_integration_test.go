@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -152,10 +153,15 @@ type fakeModel struct {
 	mu         sync.Mutex
 	scoreCalls int
 	dedupCalls int
+	transCalls int
 	embedCalls int
 }
 
-var titleLine = regexp.MustCompile(`(?m)^\[(\d+)\] (.*)$`)
+var (
+	titleLine    = regexp.MustCompile(`(?m)^\[(\d+)\] (.*)$`)
+	transTitle   = regexp.MustCompile(`(?m)^Title: (.*)$`)
+	transSummary = regexp.MustCompile(`(?m)^Summary: (.*)$`)
+)
 
 func (f *fakeModel) Model() string { return "fake" }
 
@@ -172,6 +178,15 @@ func (f *fakeModel) Chat(_ context.Context, req ports.ChatRequest) (string, erro
 			}
 		}
 		return fmt.Sprintf(`{"duplicates": [[%s]]}`, strings.Join(idx, ",")), nil
+	}
+	if strings.Contains(req.System, "news translator") {
+		f.transCalls++
+		title, summary := transTitle.FindStringSubmatch(req.User), transSummary.FindStringSubmatch(req.User)
+		if title == nil || summary == nil {
+			return "", fmt.Errorf("bad translation prompt")
+		}
+		b, _ := json.Marshal(map[string]string{"title_pt": "PT " + title[1], "summary_pt": "PT " + summary[1]})
+		return string(b), nil
 	}
 	f.scoreCalls++
 	i, ok := fixtureByTitle(req.User)
@@ -325,6 +340,23 @@ FROM feed_view f JOIN items i ON i.id = f.item_id`).Scan(&feed); err != nil {
 		t.Errorf("feed_view = %s", feed)
 	}
 
+	// pt-BR step after the score: originals kept, copy saved with pt_source=llm
+	// and projected into feed_view by the deduper.
+	if scorer.Stats.Translated.Load() != int64(len(fixture)) || model.transCalls != len(fixture) {
+		t.Errorf("translated = %d, translation calls = %d, want %d", scorer.Stats.Translated.Load(), model.transCalls, len(fixture))
+	}
+	var title, titlePT, summaryPT, ptSource, fvTitlePT, fvSummaryPT string
+	if err := pool.QueryRow(ctx, `
+SELECT i.title, i.title_pt, i.summary_pt, i.pt_source, f.title_pt, f.summary_pt
+FROM items i JOIN feed_view f ON f.item_id = i.id WHERE i.external_id = 'B' AND i.translated_at IS NOT NULL`).
+		Scan(&title, &titlePT, &summaryPT, &ptSource, &fvTitlePT, &fvSummaryPT); err != nil {
+		t.Fatal(err)
+	}
+	if title != "Go 1.27 is out event-x" || titlePT != "PT Go 1.27 is out event-x" || summaryPT != "PT s B" || ptSource != "llm" ||
+		fvTitlePT != titlePT || fvSummaryPT != summaryPT {
+		t.Errorf("B translation: title=%q title_pt=%q summary_pt=%q pt_source=%q feed_view=%q/%q", title, titlePT, summaryPT, ptSource, fvTitlePT, fvSummaryPT)
+	}
+
 	// Centroid of {A,B,C} is the average embedding.
 	var centroidSim float64
 	if err := pool.QueryRow(ctx, `
@@ -361,7 +393,7 @@ FROM clusters c JOIN items p ON p.id = c.representative_item_id WHERE p.external
 	if err := pool.QueryRow(ctx, `SELECT string_agg(kind || '=' || n, ',' ORDER BY kind) FROM (SELECT kind, count(*) n FROM ai_cache GROUP BY kind) s`).Scan(&cache); err != nil {
 		t.Fatal(err)
 	}
-	if cache != "dedup=2,embed=6,score=6" {
+	if cache != "dedup=2,embed=6,score=6,translate=6" {
 		t.Errorf("ai_cache = %s", cache)
 	}
 
