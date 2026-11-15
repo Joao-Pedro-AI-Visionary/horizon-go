@@ -102,6 +102,9 @@ func settle(msg jetstream.Msg, err error, log *slog.Logger) {
 // ScoreStats counts scorer outcomes.
 type ScoreStats struct {
 	Scored, Skipped, Failed atomic.Int64
+	// Translated counts saved pt-BR copies; TranslateFailed counts
+	// best-effort translation failures (the score is kept).
+	Translated, TranslateFailed atomic.Int64
 }
 
 // Scorer is the scoring stage.
@@ -163,12 +166,37 @@ func (s *Scorer) ScoreItem(ctx context.Context, id int64) (bool, error) {
 	if err != nil || !saved {
 		return false, err
 	}
+	// Before items.scored so the deduper projects the pt-BR copy too.
+	s.TranslateItem(ctx, id, row.Title, a.Summary)
 	if err := s.Bus.PublishScored(ctx, id); err != nil {
 		// The item is scored; the deduper backfill picks it up anyway.
 		s.log().Warn("publish scored failed", "item", id, "err", err)
 	}
 	s.log().Info("scored", "item", id, "score", a.Score, "tags", a.Tags)
 	return true, nil
+}
+
+// TranslateItem is the best-effort pt-BR step after a successful score: text
+// that already looks Portuguese is copied (no model call), the rest goes to
+// the LLM. A failure is only logged; the score stays and the translation
+// backfill retries later. It reports whether a translation was saved.
+func (s *Scorer) TranslateItem(ctx context.Context, id int64, title, summary string) bool {
+	t, err := s.Analyzer.Translate(ctx, title, summary)
+	if err != nil {
+		s.Stats.TranslateFailed.Add(1)
+		s.log().Warn("translate failed, keeping the score", "item", id, "err", err)
+		return false
+	}
+	saved, err := s.Repo.SaveTranslation(context.WithoutCancel(ctx), id, t)
+	if err != nil {
+		s.Stats.TranslateFailed.Add(1)
+		s.log().Warn("save translation failed, keeping the score", "item", id, "err", err)
+		return false
+	}
+	if saved {
+		s.Stats.Translated.Add(1)
+	}
+	return saved
 }
 
 type scoreJob struct {
