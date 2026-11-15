@@ -7,15 +7,17 @@ import (
 	"strings"
 )
 
-// Writes (every method other than GET, HEAD and OPTIONS under /api) need
-// "Authorization: Bearer <token>", where token is either a session token from
-// POST /api/auth/login or the static AdminToken (GitHub Actions schedule, X
-// radar push). Reads stay public, except /api/admin/* (alerts), which needs
-// the same token.
+// Admin routes under /api need "Authorization: Bearer <token>", where token is
+// either a session token from POST /api/auth/login or the static AdminToken
+// (GitHub Actions schedule, X radar push). That includes writes and admin
+// reads such as /api/metrics, /api/sources, /api/settings and /api/admin/*.
+// Only an explicit public allowlist (feed, item pages, digests, SEO, auth
+// handshake, votes and newsletter) stays reachable without a session.
 //
-// With neither configured, writes are open only when RequireAdmin is false
-// (local development); with RequireAdmin set (production) they fail closed
-// with 503, so a missing secret never leaves the API writable.
+// OPTIONS preflight stays open so the browser can negotiate CORS. With neither
+// credential configured, access is open only when RequireAdmin is false (local
+// development); with RequireAdmin set (production) the API fails closed with
+// 503, so a missing secret never leaves admin data public.
 
 func isRead(method string) bool {
 	switch method {
@@ -68,6 +70,53 @@ var publicWrites = map[string]bool{
 	"/api/newsletter/subscribe": true, "/api/newsletter/confirm": true, "/api/newsletter/unsubscribe": true,
 }
 
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isPublicReadPath is the allowlist of GET/HEAD routes that anonymous
+// visitors may call. Everything else under /api requires an admin session.
+func isPublicReadPath(path string) bool {
+	switch path {
+	case "/api/auth", "/api/auth/me",
+		"/api/feed", "/api/feed/timeline",
+		"/api/sitemap.xml",
+		"/api/rss/feed.xml", "/api/rss/digests.xml",
+		"/api/llms.txt", "/api/llms-full.txt",
+		"/api/digests",
+		"/api/newsletter/confirm", "/api/newsletter/unsubscribe":
+		return true
+	}
+	if strings.HasPrefix(path, "/api/og/") {
+		return true
+	}
+	if rest, ok := strings.CutPrefix(path, "/api/items/"); ok {
+		return isDigits(rest)
+	}
+	if rest, ok := strings.CutPrefix(path, "/api/digests/"); ok {
+		// Public digest pages are /api/digests/YYYY-MM-DD. Actions such as
+		// /api/digests/generate stay protected (and are POST anyway).
+		if len(rest) != 10 || rest[4] != '-' || rest[7] != '-' {
+			return false
+		}
+		for _, i := range []int{0, 1, 2, 3, 5, 6, 8, 9} {
+			if rest[i] < '0' || rest[i] > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 func isPublicVotePath(p string) bool {
 	if !strings.HasPrefix(p, "/api/items/") || !strings.HasSuffix(p, "/vote") {
 		return false
@@ -78,9 +127,9 @@ func isPublicVotePath(p string) bool {
 
 func (s *Server) requireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		adminRead := strings.HasPrefix(r.URL.Path, "/api/admin/")
 		publicVote := r.Method == http.MethodPost && isPublicVotePath(r.URL.Path)
-		if (isRead(r.Method) && !adminRead) || s.WritesOpen() || publicWrites[r.URL.Path] || publicVote {
+		publicRead := isRead(r.Method) && isPublicReadPath(r.URL.Path)
+		if r.Method == http.MethodOptions || publicRead || s.WritesOpen() || publicWrites[r.URL.Path] || publicVote {
 			next.ServeHTTP(w, r)
 			return
 		}
