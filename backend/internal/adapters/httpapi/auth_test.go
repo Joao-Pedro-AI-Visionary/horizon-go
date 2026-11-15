@@ -104,9 +104,55 @@ func TestAuthCheck(t *testing.T) {
 
 func TestReadsStayPublic(t *testing.T) {
 	h := authServer("tok", true)
-	for _, p := range []string{"/api/feed", "/api/sources", "/api/settings", "/api/metrics", "/api/digests", "/healthz"} {
+	for _, p := range []string{
+		"/api/feed", "/api/feed/timeline", "/api/auth", "/api/digests",
+		"/api/items/1", "/api/sitemap.xml", "/api/rss/feed.xml", "/api/llms.txt",
+		"/healthz",
+	} {
 		if rec := doAuth(h, http.MethodGet, p, "", ""); rec.Code == http.StatusUnauthorized || rec.Code == http.StatusServiceUnavailable {
 			t.Errorf("GET %s: got %d", p, rec.Code)
+		}
+	}
+}
+
+func TestAdminReadsNeedTheAdminToken(t *testing.T) {
+	h := authServer("s3cret-token", true)
+	adminGets := []string{"/api/metrics?days=7", "/api/sources", "/api/settings", "/api/admin/alerts"}
+	for _, p := range adminGets {
+		for _, auth := range []string{"", "Bearer wrong", "Basic s3cret-token"} {
+			rec := doAuth(h, http.MethodGet, p, auth, "")
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("GET %s auth=%q: got %d want 401", p, auth, rec.Code)
+			}
+		}
+		rec := doAuth(h, http.MethodGet, p, "Bearer s3cret-token", "")
+		if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusServiceUnavailable {
+			t.Errorf("GET %s with token: got %d %s", p, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestPublicReadPathAllowlist(t *testing.T) {
+	public := []string{
+		"/api/auth", "/api/auth/me", "/api/feed", "/api/feed/timeline",
+		"/api/items/42", "/api/og/items/42.png", "/api/sitemap.xml",
+		"/api/rss/feed.xml", "/api/rss/digests.xml", "/api/llms.txt",
+		"/api/llms-full.txt", "/api/digests", "/api/digests/2026-11-14",
+		"/api/newsletter/confirm", "/api/newsletter/unsubscribe",
+	}
+	for _, p := range public {
+		if !isPublicReadPath(p) {
+			t.Errorf("expected public: %s", p)
+		}
+	}
+	private := []string{
+		"/api/metrics", "/api/sources", "/api/settings", "/api/admin/alerts",
+		"/api/items/ingest", "/api/items/42/vote", "/api/pipeline/run",
+		"/api/digests/generate", "/api/sources/1",
+	}
+	for _, p := range private {
+		if isPublicReadPath(p) {
+			t.Errorf("expected private: %s", p)
 		}
 	}
 }

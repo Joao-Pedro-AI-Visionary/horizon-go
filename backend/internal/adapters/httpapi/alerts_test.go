@@ -58,9 +58,15 @@ func TestAdminAlertsNeedsAdmin(t *testing.T) {
 	if rec := doAuth(h, http.MethodGet, "/api/admin/alerts", "Bearer "+out.Token, ""); rec.Code != http.StatusOK {
 		t.Fatalf("session: %d %s", rec.Code, rec.Body.String())
 	}
-	// Other reads stay public.
-	if rec := doAuth(h, http.MethodGet, "/api/sources", "", ""); rec.Code != http.StatusOK {
-		t.Fatalf("public read: %d", rec.Code)
+	// Admin reads such as /api/sources stay protected; the public feed does not.
+	if rec := doAuth(h, http.MethodGet, "/api/sources", "", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous sources: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := doAuth(h, http.MethodGet, "/api/sources", "Bearer static-token", ""); rec.Code != http.StatusOK {
+		t.Fatalf("admin sources: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := doAuth(h, http.MethodGet, "/api/feed", "", ""); rec.Code != http.StatusOK {
+		t.Fatalf("public feed: %d %s", rec.Code, rec.Body.String())
 	}
 }
 
